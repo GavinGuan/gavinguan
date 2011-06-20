@@ -381,22 +381,6 @@ Index: OvmfPkg/Library/AcpiTimerLib/AcpiTimerLib.c
  }
  
  /**
-Index: OvmfPkg/build.sh
-===================================================================
---- OvmfPkg/build.sh	(revision 11711)
-+++ OvmfPkg/build.sh	(working copy)
-@@ -187,7 +187,10 @@
-   else
-     AUTO_QEMU_HDA=
-   fi
--  QEMU_COMMAND="$QEMU_COMMAND -L $QEMU_FIRMWARE_DIR $AUTO_QEMU_HDA $*"
-+  #QEMU_COMMAND="$QEMU_COMMAND -L $QEMU_FIRMWARE_DIR $AUTO_QEMU_HDA $*"
-+  #QEMU_COMMAND="$QEMU_COMMAND -L $QEMU_FIRMWARE_DIR $AUTO_QEMU_HDA $* -serial file:/root/src/mylog/serial.log"
-+  QEMU_COMMAND="$QEMU_COMMAND -L $QEMU_FIRMWARE_DIR $AUTO_QEMU_HDA $* -serial file:/root/src/mylog/serial.log -cdrom /root/gb/ubuntu-10.10-desktop-amd64.iso"
-+  #QEMU_COMMAND="$QEMU_COMMAND -L $QEMU_FIRMWARE_DIR $AUTO_QEMU_HDA $* -serial file:/root/src/mylog/serial.log -cdrom /root/gb/xen_img/Fedora-15-x86_64-netinst.iso"
-   echo Running: $QEMU_COMMAND
-   $QEMU_COMMAND
-   exit $?
 Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.inf
 ===================================================================
 --- OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.inf	(revision 0)
