@@ -23,13 +23,13 @@ WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
 #include <Guid/EventGroup.h>
 #include <Guid/SmBios.h>
 #include <Library/DebugLib.h>
-//#include <Library/UefiDriverEntryPoint.h>
+#include <Library/UefiDriverEntryPoint.h>
 #include <Library/UefiLib.h>
 #include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/MemoryAllocationLib.h>
 #include <Library/UefiBootServicesTableLib.h>
-//#include <Library/PcdLib.h>
+#include <Library/PcdLib.h>
 #include <Library/HobLib.h>
 
 #define XEN_SMBIOS_PHYSICAL_ADDRESS       0x000EB000

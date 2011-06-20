@@ -1,0 +1,61 @@
+Index: MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.c
+===================================================================
+--- MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.c	(revision 11711)
++++ MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.c	(working copy)
+@@ -950,8 +950,32 @@
+   return EFI_SUCCESS;
+ }
+ 
++/**
++  Function finds a system configuration table that is stored in the
++  EFI System Table based on the provided GUID.
+ 
++  @param[in]  TableGuid    A pointer to the table's GUID type.
+ 
++  @retval EFI_SUCCESS      A configuration table matching TableGuid was found.
++  @retval EFI_NOT_FOUND    A configuration table matching TableGuid was not found.
++**/
++EFI_STATUS
++EFIAPI
++GetSystemConfigurationTable (
++  IN EFI_GUID *TableGuid
++  )
++{
++  UINTN Index;
++
++  for (Index = 0; Index < gST->NumberOfTableEntries; Index++) {
++    if (CompareGuid (TableGuid, &(gST->ConfigurationTable[Index].VendorGuid))) {
++      return EFI_SUCCESS;
++    }
++  }
++
++  return EFI_NOT_FOUND;
++}
++
+ /**
+   Installs the Smbios Table to the System Table. This function gets called
+   when the EFI_EVENT_SIGNAL_READY_TO_BOOT gets signaled
+@@ -970,13 +994,19 @@
+   UINT8       *Eps;
+   EFI_STATUS  Status;
+ 
+-  Status = SmbiosCreateTable ((VOID **) &Eps);
+-  if (!EFI_ERROR (Status)) {
+-    gBS->InstallConfigurationTable (&gEfiSmbiosTableGuid, Eps);
++  //
++  // See if there is already a SMBIOS table in System Configure table
++  //
++  Status = GetSystemConfigurationTable (&gEfiSmbiosTableGuid);
++
++  if (Status == EFI_NOT_FOUND) {
++    Status = SmbiosCreateTable ((VOID **) &Eps);
++    if (!EFI_ERROR (Status)) {
++      gBS->InstallConfigurationTable (&gEfiSmbiosTableGuid, Eps);
++    }
+   }
+ }
+ 
+-
+ /**
+ 
+   Driver to produce Smbios protocol and register event for constructing SMBIOS table. 

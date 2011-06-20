@@ -17,7 +17,7 @@
 [Defines]
   INF_VERSION                    = 0x00010005
   BASE_NAME                      = XenSmbiosDxe
-  FILE_GUID                      = FBD88642-0737-49bc-81B5-1889CD57D9EA
+  FILE_GUID                      = 4110465d-5ff3-4f4b-b580-24ed0d06747a
   MODULE_TYPE                    = DXE_DRIVER
   VERSION_STRING                 = 1.0
 
@@ -44,9 +44,9 @@
   BaseMemoryLib
   BaseLib
   UefiLib
-#  UefiDriverEntryPoint
+  UefiDriverEntryPoint
   DebugLib
-#  PcdLib
+  PcdLib
   HobLib
 
 [Protocols]

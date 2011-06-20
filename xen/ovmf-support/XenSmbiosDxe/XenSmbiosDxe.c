@@ -31,14 +31,32 @@ XenSmbiosDetect (
   )
 {
 
-  UINT32 XenSmbiosPtr;
-  SMBIOS_TABLE_ENTRY_POINT *XenSmbiosEntryPointStructure;
+  UINTN                     XenSmbiosPtr;
+  SMBIOS_TABLE_ENTRY_POINT  *XenSmbiosEntryPointStructure;
+  UINTN                     Index;
+  UINT8                     Length;
+  UINT8                     Checksum;
+  CHAR8                     *SmbiosBit;
 
   for (XenSmbiosPtr = XEN_SMBIOS_PHYSICAL_ADDRESS; XenSmbiosPtr < XEN_SMBIOS_PHYSICAL_END; XenSmbiosPtr += 0x10) {
 
     XenSmbiosEntryPointStructure = (SMBIOS_TABLE_ENTRY_POINT *) (UINTN) XenSmbiosPtr;
 
     if (!AsciiStrnCmp ((CHAR8 *) XenSmbiosEntryPointStructure->AnchorString, "_SM_", 4) && !AsciiStrnCmp ((CHAR8 *) XenSmbiosEntryPointStructure->IntermediateAnchorString, "_DMI_", 5)) {
+      //
+      // Check the structure's checksum
+      //
+      SmbiosBit = (CHAR8 *) XenSmbiosPtr;
+      Length = XenSmbiosEntryPointStructure->EntryPointLength;
+      Checksum = 0;
+
+      for (Index = 0; Index < Length; Index++) {
+        Checksum += SmbiosBit[Index];
+      }
+      if (Checksum != 0) {
+        break;
+      }
+
       return XenSmbiosEntryPointStructure;
     }
   }
@@ -140,14 +158,16 @@ XenSmbiosCreateTable (
   return EFI_SUCCESS;
 }
 
+
+
 /**
-  Installs the Smbios Table to the System Table. This function gets called
-  when the EFI_EVENT_SIGNAL_READY_TO_BOOT gets signaled
+  Installs the Xen hvmloader Smbios Table to the System Table.
 
   @param ImageHandle     Module's image handle
   @param SystemTable     Pointer of EFI_SYSTEM_TABLE
 
   @retval EFI_SUCCESS    Smbios protocol installed
+  @retval Other          No protocol installed, unload driver.
 
 **/
 EFI_STATUS
@@ -161,7 +181,6 @@ XenSmbiosTablePublish (
   EFI_STATUS                Status;
   EFI_HOB_GUID_TYPE         *GuidHob;
 
-  DEBUG ((EFI_D_INFO, "XenSmbiosTablePublish line %d \n", __LINE__));
   //
   // See if a XenInfo HOB is available
   //
