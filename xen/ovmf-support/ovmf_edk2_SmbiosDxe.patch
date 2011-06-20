@@ -2,21 +2,20 @@ Index: MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.c
 ===================================================================
 --- MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.c	(revision 11711)
 +++ MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.c	(working copy)
-@@ -1,8 +1,12 @@
+@@ -1,8 +1,11 @@
  /** @file
    This code produces the Smbios protocol. It also responsible for constructing 
    SMBIOS table into system table.
 +
-+  Modified to support Another SMBIOS, such as Xen hvmloader SMBIOS.
++  Modified to support Another SMBIOS, such as Xen hvmloader SMBIOS. - Bei Guan <gbtju85@gmail.com>
    
 -Copyright (c) 2009 - 2011, Intel Corporation. All rights reserved.<BR>
 +  Copyright (c) 2009 - 2011, Intel Corporation. All rights reserved.<BR>
-+  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
 +
  This program and the accompanying materials                          
  are licensed and made available under the terms and conditions of the BSD License         
  which accompanies this distribution.  The full text of the license may be found at        
-@@ -950,8 +954,32 @@
+@@ -950,8 +953,32 @@
    return EFI_SUCCESS;
  }
  
@@ -49,7 +48,7 @@ Index: MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.c
  /**
    Installs the Smbios Table to the System Table. This function gets called
    when the EFI_EVENT_SIGNAL_READY_TO_BOOT gets signaled
-@@ -970,13 +998,19 @@
+@@ -970,13 +997,19 @@
    UINT8       *Eps;
    EFI_STATUS  Status;
  
