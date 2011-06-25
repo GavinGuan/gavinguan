@@ -1,0 +1,58 @@
+Test Platform:
+Xen-4.2-unstable + qemu 0.10.2 + Dom0 2.6.32-5-xen-amd64
+
+HardDisk)
+-----
+1) Create a Hard Disk image (disk.img) with MBR and a FAT partition.
+
+2) Copy Build/MdeModule/DEBUG_GCC44/IA32/HelloWorld.efi and Build/MdeModule/DEBUG_GCC44/X64/HelloWorld.efi as different archtecture EFI applications into disk.img.
+
+3)Attach disk.img in the HVM config file.
+disk = [ 'file:/root/gb/xen_img/disk.img,ioemu:hda,w' ]
+
+4) Boot hvm domain with hvmbios = "ovmf-ia32".
+* "fs0" mapping can be seen in the EFI Shell;
+* Can list the files in "fs0" using "ls" command;
+* Can run HelloWorld.efi correctly in EFI Shell.
+
+5) Boot hvm domain with hvmbios = "ovmf-x86".
+* "fs0" mapping can be seen in the EFI Shell;
+* Can list the files in "fs0" using "ls" command;
+* Can run HelloWorld.efi correctly in EFI Shell.
+
+
+Floppy)
+-----
+Floppy disk is not supported in Xen(Xen-4.2 + qemu 0.10.2), but we can attach it as a harddisk image.
+
+1) Create a Floppy Disk image (floppy_fat.img) with FAT16.
+
+2) Copy HelloWorld.efi of different archtecture EFI applications into floppy_fat.img. 
+
+3) Attach floppy_fat.img in the HVM config file.
+disk = [ 'file:/root/gb/xen_img/floppy_fat.img,hda,w' ]
+
+4) Boot hvm domain with hvmbios = "ovmf-ia32".
+* "fs0" mapping can be seen in the EFI Shell;
+* Can list the files in "fs0" using "ls" command;
+* Can run HelloWorld.efi correctly in EFI Shell.
+
+5) Boot hvm domain with hvmbios = "ovmf-x86".
+* "fs0" mapping can be seen in the EFI Shell;
+* Can list the files in "fs0" using "ls" command;
+* Can run HelloWorld.efi correctly in EFI Shell.
+
+
+CDRom)
+-----
+I use the "Fedora-15-x86_64-netinst.iso" and "ubuntu-10.10-desktop-amd64.iso" which all support the EFI boot and are X64 architecture.
+
+1) Attach "*.iso" in the HVM config file.
+disk = [ 'file:/root/gb/xen_img/Fedora-15-x86_64-netinst.iso,hda,w' ]
+or
+disk = [ 'file:/root/gb/xen_img/ubuntu-10.10-desktop-amd64.iso,hda,w' ]
+
+2) Boot hvm domain with hvmbios = "ovmf-x86".
+* Can see the graphic setup interface;
+* Can boot the OS using the items on the setup interface;
+* If enter into the EFI Shell, "fs0" mapping can be seen;
