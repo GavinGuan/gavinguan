@@ -8,7 +8,7 @@ patch:
 ovmf_edk2_OvmfPkg_XenAcpiTableDxe.patch
 ovmf_edk2_AcpiTableDxe.patch
 ovmf_xen_smbios_acpi_publish.patch
-ovmf_binary_for_xen\ovmf-ia32.bin|
+ovmf_binary_for_xen\ovmf-ia32.bin
 ovmf_binary_for_xen\ovmf-ia32-cirrus-vga.bin
 ovmf_binary_for_xen\ovmf-x64.bin
 ovmf_binary_for_xen\ovmf-x64-cirrus-vga.bin
