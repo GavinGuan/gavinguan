@@ -34,7 +34,7 @@ EFI_XEN_SUPPORT_ACPI_TABLE_INSTANCE                *AcpiTableInstance;
 
 **/
 EFI_STATUS
-AcpiPlatformChecksum (
+VerifyAcpiPlatformChecksum (
   IN VOID       *Buffer,
   IN UINTN      Size
   )
@@ -61,6 +61,125 @@ AcpiPlatformChecksum (
     return EFI_CRC_ERROR;
   }
 
+  return EFI_SUCCESS;
+}
+
+/**
+  This function calculates and updates an UINT8 checksum.
+
+  @param  Buffer          Pointer to buffer to checksum
+  @param  Size            Number of bytes to checksum
+  @param  ChecksumOffset  Offset to place the checksum result in
+
+  @return EFI_SUCCESS     The function completed successfully.
+
+**/
+EFI_STATUS
+AcpiPlatformChecksum (
+  IN VOID       *Buffer,
+  IN UINTN      Size,
+  IN UINTN      ChecksumOffset
+  )
+{
+  UINT8 Sum;
+  UINT8 *Ptr;
+
+  Sum = 0;
+  //
+  // Initialize pointer
+  //
+  Ptr = Buffer;
+
+  //
+  // set checksum to 0 first
+  //
+  Ptr[ChecksumOffset] = 0;
+
+  //
+  // add all content of buffer
+  //
+  while ((Size--) != 0) {
+    Sum = (UINT8) (Sum + (*Ptr++));
+  }
+  //
+  // set checksum
+  //
+  Ptr                 = Buffer;
+  Ptr[ChecksumOffset] = (UINT8) (0xff - Sum + 1);
+
+  return EFI_SUCCESS;
+}
+
+/**
+  Checksum all versions of the common tables, RSDP, RSDT, XSDT.
+
+  @param  AcpiTableInstance  Protocol instance private data.
+
+  @return EFI_SUCCESS        The function completed successfully.
+
+**/
+EFI_STATUS
+ChecksumCommonTables (
+  IN OUT EFI_XEN_SUPPORT_ACPI_TABLE_INSTANCE         *AcpiTableInstance
+  )
+{
+  //
+  // RSDP ACPI 1.0 checksum for 1.0 table.  This is only the first 20 bytes of the structure
+  //
+  AcpiPlatformChecksum (
+    AcpiTableInstance->Rsdp1,
+    sizeof (EFI_ACPI_1_0_ROOT_SYSTEM_DESCRIPTION_POINTER),
+    OFFSET_OF (EFI_ACPI_1_0_ROOT_SYSTEM_DESCRIPTION_POINTER,
+    Checksum)
+    );
+
+  //
+  // RSDP ACPI 1.0 checksum for 2.0/3.0 table.  This is only the first 20 bytes of the structure
+  //
+  AcpiPlatformChecksum (
+    AcpiTableInstance->Rsdp2,
+    sizeof (EFI_ACPI_1_0_ROOT_SYSTEM_DESCRIPTION_POINTER),
+    OFFSET_OF (EFI_ACPI_1_0_ROOT_SYSTEM_DESCRIPTION_POINTER,
+    Checksum)
+    );
+
+  //
+  // RSDP ACPI 2.0/3.0 checksum, this is the entire table
+  //
+  AcpiPlatformChecksum (
+    AcpiTableInstance->Rsdp2,
+    sizeof (EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER),
+    OFFSET_OF (EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER,
+    ExtendedChecksum)
+    );
+
+  //
+  // RSDT checksums
+  //
+  AcpiPlatformChecksum (
+    AcpiTableInstance->Rsdt1,
+    AcpiTableInstance->Rsdt1->Length,
+    OFFSET_OF (EFI_ACPI_DESCRIPTION_HEADER,
+    Checksum)
+    );
+
+  AcpiPlatformChecksum (
+    AcpiTableInstance->Rsdt2,
+    AcpiTableInstance->Rsdt2->Length,
+    OFFSET_OF (EFI_ACPI_DESCRIPTION_HEADER,
+    Checksum)
+    );
+
+  //
+  // XSDT checksum
+  //
+  AcpiPlatformChecksum (
+    AcpiTableInstance->Xsdt,
+    AcpiTableInstance->Xsdt->Length,
+    OFFSET_OF (EFI_ACPI_DESCRIPTION_HEADER,
+    Checksum)
+    );
+  
   return EFI_SUCCESS;
 }
 
@@ -144,7 +263,7 @@ XenAcpiTableDetect (
       //
       // RSDP ACPI 1.0 checksum for 2.0/3.0 table.  This is only the first 20 bytes of the structure
       //
-      Status = AcpiPlatformChecksum (
+      Status = VerifyAcpiPlatformChecksum (
         Rsdp2Structure,
         sizeof (EFI_ACPI_1_0_ROOT_SYSTEM_DESCRIPTION_POINTER)
         );
@@ -157,7 +276,7 @@ XenAcpiTableDetect (
         //
         // RSDP ACPI 2.0/3.0 checksum, this is the entire table
         //
-        Status = AcpiPlatformChecksum (
+        Status = VerifyAcpiPlatformChecksum (
           Rsdp2Structure,
           sizeof (EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER)
           );
@@ -180,7 +299,7 @@ XenAcpiTableDetect (
 
         if (!AsciiStrnCmp ((CHAR8 *) &Rsdt2Structure->Header.Signature, "RSDT", 4)) {
 
-          Status = AcpiPlatformChecksum (
+          Status = VerifyAcpiPlatformChecksum (
             Rsdt2Structure,
             Rsdt2Structure->Header.Length
             );
@@ -207,7 +326,7 @@ XenAcpiTableDetect (
 
         if (!AsciiStrnCmp ((CHAR8 *) &XsdtStructure->Header.Signature, "XSDT", 4)) {
 
-          Status = AcpiPlatformChecksum (
+          Status = VerifyAcpiPlatformChecksum (
             XsdtStructure,
             XsdtStructure->Header.Length
             );
@@ -289,7 +408,7 @@ XenAcpiTableDetect (
 
           if (!AsciiStrnCmp ((CHAR8 *) &Fadt2Structure->Header.Signature, "FACP", 4)) {
 
-            Status = AcpiPlatformChecksum (
+            Status = VerifyAcpiPlatformChecksum (
               Fadt2Structure,
               Fadt2Structure->Header.Length
               );
@@ -339,12 +458,10 @@ PublishTables (
 {
   EFI_STATUS                Status;
 
-DEBUG ((EFI_D_INFO, "XenAcpiTable: PublishTables line %d \n", __LINE__));
-
   //
   // Do checksum again because Dsdt/Xsdt is updated.
   //
-  //ChecksumCommonTables (AcpiTableInstance);
+  ChecksumCommonTables (AcpiTableInstance);
 
   //
   // Add the RSD_PTR to the system table and store that we have installed the
@@ -434,6 +551,16 @@ SetAcpiTable (
       (VOID *) (UINTN) XenAcpiTablePointerStructure->XenDsdt2Ptr,
       TotalSize
      );
+
+    //
+    // Checksum the table
+    //
+    AcpiPlatformChecksum (
+      AcpiTableInstance->Dsdt2,
+      AcpiTableInstance->Dsdt2->Length,
+      OFFSET_OF (EFI_ACPI_DESCRIPTION_HEADER,
+      Checksum)
+      );
   }
 
   if (XenAcpiTablePointerStructure->XenFacs2Ptr) {
@@ -458,6 +585,16 @@ SetAcpiTable (
       (VOID *) (UINTN) XenAcpiTablePointerStructure->XenFacs2Ptr,
       TotalSize
      );
+
+    //
+    // Checksum the table
+    //
+    AcpiPlatformChecksum (
+      AcpiTableInstance->Facs2,
+      AcpiTableInstance->Facs2->Length,
+      OFFSET_OF (EFI_ACPI_DESCRIPTION_HEADER,
+      Checksum)
+      );
   }
 
   //
@@ -495,6 +632,16 @@ SetAcpiTable (
         (VOID *) (UINTN) CurrentTable->XenTablePhysicalAddress,
         TotalSize
        );
+
+      //
+      // Checksum the table
+      //
+      AcpiPlatformChecksum (
+        (VOID *) (UINTN) PageAddress,
+        CurrentTable->Length,
+        OFFSET_OF (EFI_ACPI_DESCRIPTION_HEADER,
+        Checksum)
+        );
 
       //
       // Add to RSDT 2.0
@@ -571,6 +718,16 @@ SetAcpiTable (
     }
 
     //
+    // Checksum the table
+    //
+    AcpiPlatformChecksum (
+      AcpiTableInstance->Fadt1,
+      AcpiTableInstance->Fadt1->Header.Length,
+      OFFSET_OF (EFI_ACPI_DESCRIPTION_HEADER,
+      Checksum)
+      );
+
+    //
     // Add to RSDT 2.0
     //
     CurrentRsdtEntry  = (UINT32 *) ((UINT8 *) AcpiTableInstance->Rsdt2 + sizeof (EFI_ACPI_DESCRIPTION_HEADER));
@@ -592,9 +749,6 @@ SetAcpiTable (
 
     ZeroMem ((UINT8 *) (UINTN) PageAddress, TotalSize);
 
-DEBUG ((EFI_D_INFO, "ACPI-Table: PageAddress = %x line %d \n", PageAddress, __LINE__));
-
-
     AcpiTableInstance->Fadt2 = (EFI_ACPI_2_0_FIXED_ACPI_DESCRIPTION_TABLE *) (UINTN) PageAddress;
 
     //
@@ -615,6 +769,16 @@ DEBUG ((EFI_D_INFO, "ACPI-Table: PageAddress = %x line %d \n", PageAddress, __LI
       AcpiTableInstance->Fadt2->Dsdt          = (UINT32) (UINTN) AcpiTableInstance->Dsdt2;
       AcpiTableInstance->Fadt2->XDsdt         = (UINT64) (UINTN) AcpiTableInstance->Dsdt2;
     }
+
+    //
+    // Checksum the table
+    //
+    AcpiPlatformChecksum (
+      AcpiTableInstance->Fadt2,
+      AcpiTableInstance->Fadt2->Header.Length,
+      OFFSET_OF (EFI_ACPI_DESCRIPTION_HEADER,
+      Checksum)
+      );
 
     //
     // Add to XSDT 2.0
