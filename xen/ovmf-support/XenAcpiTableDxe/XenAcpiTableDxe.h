@@ -58,6 +58,14 @@ UINTN mEfiAcpiMaxNumTables = EFI_ACPI_MAX_NUM_TABLES;
 #define HIGH_32_BITS(a)       ( (a) & HIGH_PART )
 
 //
+// Protocol private structure definition
+//
+//
+// ACPI support protocol instance signature definition.
+//
+#define EFI_ACPI_TABLE_SIGNATURE  SIGNATURE_32 ('S', 'T', 'A', 'E')
+
+//
 // Xen ACPI support protocol instance data structure
 //
 typedef struct {
@@ -77,7 +85,18 @@ typedef struct {
   UINTN                                         NumberOfTableEntries2;  // Number of ACPI 2.0 tables
   BOOLEAN                                       TablesInstalled1;       // ACPI 1.0 tables published
   BOOLEAN                                       TablesInstalled2;       // ACPI 2.0 tables published
+  EFI_ACPI_TABLE_PROTOCOL                       AcpiTableProtocol;
 } EFI_XEN_SUPPORT_ACPI_TABLE_INSTANCE;
+
+//
+// ACPI table protocol instance containing record macro
+//
+#define EFI_ACPI_TABLE_INSTANCE_FROM_THIS(a) \
+  CR (a, \
+      EFI_XEN_SUPPORT_ACPI_TABLE_INSTANCE, \
+      AcpiTableProtocol, \
+      EFI_ACPI_TABLE_SIGNATURE \
+      )
 
 //
 // RSDT 2.0/3.0
@@ -121,9 +140,9 @@ typedef struct {
   EFI_ACPI_2_0_FIRMWARE_ACPI_CONTROL_STRUCTURE  *XenFacs2Ptr;                 // Pointer to Xen FACS table header
   EFI_ACPI_DESCRIPTION_HEADER                   *XenDsdt1Ptr;                 // Pointer to Xen DSDT table header
   EFI_ACPI_DESCRIPTION_HEADER                   *XenDsdt2Ptr;                 // Pointer to Xen DSDT table header
-  LIST_ENTRY                                    XenSsdtTableList;                 // Link all the Xen SSDT tables
-  UINTN                                         XenNumberOfTableEntries1;  // Number of Xen ACPI 1.0 tables
-  UINTN                                         XenNumberOfTableEntries2;  // Number of Xen ACPI 2.0 tables
+  LIST_ENTRY                                    XenSsdtTableList;             // Link all the Xen SSDT tables
+  UINTN                                         XenNumberOfTableEntries1;     // Number of Xen ACPI 1.0 tables
+  UINTN                                         XenNumberOfTableEntries2;     // Number of Xen ACPI 2.0 tables
 } XEN_ACPI_TABLE_POINTER;
 
 #endif

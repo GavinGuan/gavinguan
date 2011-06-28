@@ -1,12 +1,11 @@
 Xen ACPI Tables published inside UEFI
 -----
 1) The patches publish Xen ACPI tables inside UEFI. They support both QEMU and Xen.
-2) OvmfPkg/XenAcpiTableDxe can detect the Xen environment and XenACPI Tables, and then installs Xen ACPI Tables to UEFI system configuration table. 
-3) MdeModulePkg/Universal/Acpi/AcpiTableDxe will look up the system table to see if ACPI Tables have been installed. If they have been installed, just does nothing. Otherwise, it does as before.
+2) OvmfPkg/XenAcpiTableDxe detects the Xen environment, finds the Xen ACPI Tables and publishes them with the AcpiTable protocol. It overrides the method InstallAcpiTable in MdeModulePkg/Universal/Acpi/AcpiTableDxe.
 
 patch:
 ovmf_edk2_OvmfPkg_XenAcpiTableDxe.patch
-ovmf_edk2_AcpiTableDxe.patch
+ovmf_edk2_OvmfPkg_configuration.patch
 ovmf_xen_smbios_acpi_publish.patch
 ovmf_binary_for_xen\ovmf-ia32.bin
 ovmf_binary_for_xen\ovmf-ia32-cirrus-vga.bin
