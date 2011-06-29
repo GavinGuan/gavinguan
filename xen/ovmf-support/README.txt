@@ -1,7 +1,8 @@
 Xen ACPI Tables published inside UEFI
 -----
 1) The patches publish Xen ACPI tables inside UEFI. Support both QEMU and Xen.
-2) OvmfPkg/AcpiPlatformDxe detects the Xen environment, finds out Xen ACPI Tables and publishes them with the AcpiTable protocol. It repalces MdeModulePkg/Universal/Acpi/AcpiPlatformDxe.
+2) Create a new OvmfPkg/AcpiPlatformDxe to replace MdeModulePkg/Universal/Acpi/AcpiPlatformDxe.
+3) OvmfPkg/AcpiPlatformDxe detects the Xen environment, finds out Xen ACPI Tables and publishes them with the Acpi Table protocol. If it is not the Xen environment, OvmfPkg/AcpiPlatformDxe just does as MdeModulePkg/Universal/Acpi/AcpiPlatformDxe.
 
 patch:
 ovmf_edk2_OvmfPkg_AcpiPlatformDxe.patch
