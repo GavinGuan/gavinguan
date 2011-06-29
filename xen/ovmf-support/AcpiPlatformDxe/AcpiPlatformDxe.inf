@@ -1,27 +1,25 @@
 ## @file
-#  Component description file for Xen ACPI Table module.
-#  This driver initializes and installs the Xen ACPI Table protocol.
+#  ACPI Platform Driver. Publish Xen ACPI Table inside OVMF. Support both Xen and QEMU.
 #
 #  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
 #
-#  This program and the accompanying materials are
-#  licensed and made available under the terms and conditions of the BSD License
+#  This program and the accompanying materials
+#  are licensed and made available under the terms and conditions of the BSD License
 #  which accompanies this distribution.  The full text of the license may be found at
 #  http://opensource.org/licenses/bsd-license.php
 #  
 #  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
 #  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
-#
+#  
 ##
 
 [Defines]
   INF_VERSION                    = 0x00010005
-  BASE_NAME                      = XenAcpiTableDxe
-  FILE_GUID                      = 47e8a6c8-da69-4a5f-9caa-1866d9db1a6a
+  BASE_NAME                      = AcpiPlatform
+  FILE_GUID                      = 43df49bc-4e5c-47f2-af8d-bcc0e9725343
   MODULE_TYPE                    = DXE_DRIVER
   VERSION_STRING                 = 1.0
-
-  ENTRY_POINT                    = InitializeXenAcpiTableDxe
+  ENTRY_POINT                    = AcpiPlatformEntryPoint
 
 #
 # The following information is for reference only and not required by the build tools.
@@ -30,8 +28,8 @@
 #
 
 [Sources]
-  XenAcpiTableDxe.c
-  XenAcpiTableDxe.h
+  AcpiPlatform.h
+  AcpiPlatform.c
 
 [Packages]
   MdePkg/MdePkg.dec
@@ -39,14 +37,15 @@
   OvmfPkg/OvmfPkg.dec
 
 [LibraryClasses]
-  UefiBootServicesTableLib
-  MemoryAllocationLib
-  UefiDriverEntryPoint
-  BaseMemoryLib
   UefiLib
-  DebugLib
-  BaseLib
+  DxeServicesLib
   PcdLib
+  BaseMemoryLib
+  DebugLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+  MemoryAllocationLib
+  BaseLib
   HobLib
 
 [Guids]
@@ -54,15 +53,13 @@
   gEfiAcpiTableGuid
   gEfiXenInfoGuid
 
-[FeaturePcd]
-  gEfiMdeModulePkgTokenSpaceGuid.PcdInstallAcpiSdtProtocol
-
 [Protocols]
-  gEfiAcpiTableProtocolGuid                     # PROTOCOL ALWAYS_PRODUCED
-  gEfiAcpiSdtProtocolGuid                       # PROTOCOL ALWAYS_PRODUCED
-  gEfiDxeSmmReadyToLockProtocolGuid             # PROTOCOL ALWAYS_CONSUMED
+  gEfiAcpiTableProtocolGuid                     # PROTOCOL ALWAYS_CONSUMED
+#  gEfiDxeSmmReadyToLockProtocolGuid             # PROTOCOL ALWAYS_CONSUMED
+
+[Pcd]
+  gEfiMdeModulePkgTokenSpaceGuid.PcdAcpiTableStorageFile
 
 [Depex]
-  TRUE
-
+  gEfiAcpiTableProtocolGuid
 

@@ -1,5 +1,5 @@
 /** @file
-  This code passthroughs Xen ACPI Table inside OVMF.
+  ACPI Platform Driver. Publish Xen ACPI Table inside OVMF. Support both Xen and QEMU.
 
   Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
 
@@ -23,6 +23,7 @@
 #include <Guid/Acpi.h>
 #include <Protocol/AcpiSystemDescriptionTable.h>
 #include <Protocol/DxeSmmReadyToLock.h>
+#include <Protocol/FirmwareVolume2.h>
 
 #include <Library/BaseLib.h>
 #include <Library/DebugLib.h>
@@ -33,11 +34,8 @@
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/PcdLib.h>
 #include <Library/HobLib.h>
-
-//
-// Statements that include other files
-//
 #include <IndustryStandard/Acpi.h>
+
 
 #define XEN_ACPI_PHYSICAL_ADDRESS         0x000EA020
 #define XEN_BIOS_PHYSICAL_END             0x000FFFFF
@@ -86,14 +84,14 @@ typedef struct {
   BOOLEAN                                       TablesInstalled1;       // ACPI 1.0 tables published
   BOOLEAN                                       TablesInstalled2;       // ACPI 2.0 tables published
   EFI_ACPI_TABLE_PROTOCOL                       AcpiTableProtocol;
-} EFI_XEN_SUPPORT_ACPI_TABLE_INSTANCE;
+} EFI_XEN_ACPI_TABLE_INSTANCE;
 
 //
 // ACPI table protocol instance containing record macro
 //
 #define EFI_ACPI_TABLE_INSTANCE_FROM_THIS(a) \
   CR (a, \
-      EFI_XEN_SUPPORT_ACPI_TABLE_INSTANCE, \
+      EFI_XEN_ACPI_TABLE_INSTANCE, \
       AcpiTableProtocol, \
       EFI_ACPI_TABLE_SIGNATURE \
       )

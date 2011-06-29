@@ -1,5 +1,6 @@
 /** @file
-  This code passthroughs and installs Xen hvmloader ACPI Table inside OVMF.
+  ACPI Platform Driver. If OVMF runs in Xen, find Xen ACPI Tables and publish them.
+  Support both Xen and QEMU.
 
   Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
 
@@ -13,25 +14,18 @@
 
 **/
 
-//
-// Includes
-//
-#include "XenAcpiTableDxe.h"
+#include "AcpiPlatform.h"
 
-//
-// Handle to install ACPI Table Protocol
-//
-EFI_HANDLE                              mHandle = NULL;
 XEN_ACPI_TABLE_POINTER                  *XenAcpiTablePointerStructure = NULL;
-EFI_XEN_SUPPORT_ACPI_TABLE_INSTANCE     *AcpiTableInstance = NULL;
+EFI_XEN_ACPI_TABLE_INSTANCE             *AcpiTableInstance = NULL;
 
 /**
-  This function calculates and updates an UINT8 checksum.
+  This function checks an UINT8 checksum.
 
   @param  Buffer          Pointer to buffer to checksum
   @param  Size            Number of bytes to checksum
 
-  @return EFI_SUCCESS             The function completed successfully.
+  @return EFI_SUCCESS     The function completed successfully.
 
 **/
 EFI_STATUS
@@ -85,6 +79,13 @@ AcpiPlatformChecksum (
   UINT8 Sum;
   UINT8 *Ptr;
 
+  //
+  // Check the parameter
+  //
+  if (!ChecksumOffset) {
+    ChecksumOffset = OFFSET_OF (EFI_ACPI_DESCRIPTION_HEADER, Checksum);
+  }
+
   Sum = 0;
   //
   // Initialize pointer
@@ -114,14 +115,14 @@ AcpiPlatformChecksum (
 /**
   Checksum all versions of the common tables, RSDP, RSDT, XSDT.
 
-  @param  AcpiTableInstance  Protocol instance private data.
+  @param  AcpiTableInstance  Instance of the protocol.
 
   @return EFI_SUCCESS        The function completed successfully.
 
 **/
 EFI_STATUS
 ChecksumCommonTables (
-  IN OUT EFI_XEN_SUPPORT_ACPI_TABLE_INSTANCE         *AcpiTableInstance
+  IN OUT EFI_XEN_ACPI_TABLE_INSTANCE            *AcpiTableInstance
   )
 {
   //
@@ -180,7 +181,7 @@ ChecksumCommonTables (
     OFFSET_OF (EFI_ACPI_DESCRIPTION_HEADER,
     Checksum)
     );
-  
+
   return EFI_SUCCESS;
 }
 
@@ -215,15 +216,14 @@ InitializeXenAcpiTablePointer (
 }
 
 /**
-  Figures out if Xen hvmloader provides ACPI Table for HVM.
-  And then, get the pointers of each table
+  Figures out if Xen hvmloader provides ACPI Table for HVM. If it provides, get the pointers of each table
 
   @return EFI_SUCCESS             The function completed successfully.
 
 **/
 EFI_STATUS
 EFIAPI
-XenAcpiTableDetect (
+DetectXenAcpiTable (
   VOID
   )
 {
@@ -432,8 +432,8 @@ XenAcpiTableDetect (
           break;
         }
       }
-    } //end RSDP
-  }//end for
+    }
+  }
 
   return EFI_SUCCESS;
 }
@@ -445,7 +445,7 @@ XenAcpiTableDetect (
   Create and add Secondary Tables(MADT, HPET, TCPA, etc) to RSDT and XSDT;
   Create and add DSDT and FACS to FACP.
 
-  @param  AcpiTableInstance  Instance of the protocol.
+  @param  AcpiTableInstance       Instance of the protocol.
 
   @return EFI_SUCCESS             The function completed successfully.
 
@@ -453,19 +453,19 @@ XenAcpiTableDetect (
 EFI_STATUS
 EFIAPI
 SetAcpiTable (
-  IN EFI_XEN_SUPPORT_ACPI_TABLE_INSTANCE   *AcpiTableInstance
+  IN EFI_XEN_ACPI_TABLE_INSTANCE           *AcpiTableInstance
   )
 {
-  EFI_STATUS                           Status;
-  UINT32                               *CurrentRsdtEntry;
-  VOID                                 *CurrentXsdtEntry;
-  UINT64                               Buffer64;
-  UINTN                                TotalSize;
-  EFI_PHYSICAL_ADDRESS                 PageAddress;
-  LIST_ENTRY                           *CurrentList;
-  EFI_XEN_ACPI_SSDT_2_0_TABLE_LIST     *CurrentTable;
-  UINTN                                RsdtEntryIndex;
-  UINTN                                XsdtEntryIndex;
+  EFI_STATUS                               Status;
+  UINT32                                   *CurrentRsdtEntry;
+  VOID                                     *CurrentXsdtEntry;
+  UINT64                                   Buffer64;
+  UINTN                                    TotalSize;
+  EFI_PHYSICAL_ADDRESS                     PageAddress;
+  LIST_ENTRY                               *CurrentList;
+  EFI_XEN_ACPI_SSDT_2_0_TABLE_LIST         *CurrentTable;
+  UINTN                                    RsdtEntryIndex;
+  UINTN                                    XsdtEntryIndex;
 
   //
   // Check for invalid input parameters
@@ -761,11 +761,19 @@ SetAcpiTable (
 EFI_STATUS
 EFIAPI
 PublishTables (
-  IN EFI_XEN_SUPPORT_ACPI_TABLE_INSTANCE      *AcpiTableInstance,
+  IN EFI_XEN_ACPI_TABLE_INSTANCE              *AcpiTableInstance,
   IN EFI_ACPI_TABLE_VERSION                   Version
   )
 {
   EFI_STATUS                Status;
+
+  //
+  // Construct all the APCI tables
+  //
+  Status = SetAcpiTable (AcpiTableInstance);
+  if (EFI_ERROR (Status)) {
+    return EFI_ABORTED;
+  }
 
   //
   // Do checksum again because Dsdt/Xsdt is updated.
@@ -826,28 +834,8 @@ InstallAcpiTable (
   OUT      UINTN                            *TableKey
   )
 {
-  EFI_STATUS                                 Status;
-  EFI_XEN_SUPPORT_ACPI_TABLE_INSTANCE        *AcpiTableInstance;
-  UINT32                                     Length;
-  UINT8                                      Checksum;
-
-  //
-  // Check for invalid input parameters
-  //
-  if ((AcpiTableBuffer == NULL) || (TableKey == NULL)
-     || (((EFI_ACPI_DESCRIPTION_HEADER *) AcpiTableBuffer)->Length != AcpiTableBufferSize)) {
-    return EFI_INVALID_PARAMETER;
-  }
-
-  Length   = ((EFI_ACPI_COMMON_HEADER *) AcpiTableBuffer)->Length;
-  Checksum = CalculateCheckSum8 ((UINT8 *)AcpiTableBuffer, Length);
-  if (Checksum != 0) {
-    AcpiPlatformChecksum (
-      (VOID *)AcpiTableBuffer,
-      (UINTN)Length,
-      OFFSET_OF (EFI_ACPI_DESCRIPTION_HEADER, Checksum)
-      );
-  }
+  EFI_STATUS                         Status;
+  EFI_XEN_ACPI_TABLE_INSTANCE        *AcpiTableInstance;
 
   //
   // Get the instance of the Xen ACPI table protocol
@@ -888,7 +876,6 @@ InstallAcpiTable (
   @param  TableKey  Specifies the table to uninstall.  The key was returned from InstallAcpiTable().
 
   @return EFI_SUCCESS    The table was successfully uninstalled.
-  @return EFI_NOT_FOUND  TableKey does not refer to a valid key for a table entry.
 
 **/
 EFI_STATUS
@@ -912,8 +899,7 @@ UninstallAcpiTable (
 **/
 EFI_STATUS
 XenAcpiTableConstructor (
-  EFI_XEN_SUPPORT_ACPI_TABLE_INSTANCE    *AcpiTableInstance,
-  XEN_ACPI_TABLE_POINTER                 *XenAcpiTablePointerStructure
+  EFI_XEN_ACPI_TABLE_INSTANCE    *AcpiTableInstance
   )
 {
   EFI_STATUS                     Status;
@@ -922,10 +908,10 @@ XenAcpiTableConstructor (
   EFI_PHYSICAL_ADDRESS           PageAddress;
 
   //
-  // Check for invalid input parameters
+  // Check for invalid input parameters and global variable
   //
-  ASSERT (XenAcpiTablePointerStructure);
   ASSERT (AcpiTableInstance);
+  ASSERT (XenAcpiTablePointerStructure);
 
   AcpiTableInstance->AcpiTableProtocol.InstallAcpiTable   = InstallAcpiTable;
   AcpiTableInstance->AcpiTableProtocol.UninstallAcpiTable = UninstallAcpiTable;
@@ -1071,122 +1057,281 @@ XenAcpiTableConstructor (
   Creates and initializes an instance of the ACPI Table
   Protocol and installs it on a new handle.
 
-  @param  ImageHandle   A handle for the image that is initializing this driver.
-  @param  SystemTable   A pointer to the EFI system table.
-
   @return EFI_SUCCESS           Driver initialized successfully.
   @return EFI_LOAD_ERROR        Failed to Initialize or has been loaded.
-  @return EFI_OUT_OF_RESOURCES  Could not allocate needed resources.
 
 **/
 EFI_STATUS
 EFIAPI
-InitializeXenAcpiTableDxe (
-  IN EFI_HANDLE           ImageHandle,
-  IN EFI_SYSTEM_TABLE     *SystemTable
+DetectXenAcpi (
+  VOID
   )
 {
-  EFI_STATUS                     Status;
   EFI_HOB_GUID_TYPE              *GuidHob;
-  EFI_HANDLE                     *HandleBuffer;
-  UINTN                          NumHandles;
-  EFI_ACPI_TABLE_PROTOCOL        *OldAcpiTableInterface;
-  UINTN                          Index;
-  BOOLEAN                        Installed;
 
   //
   // See if a XenInfo HOB is available
   //
   GuidHob = GetFirstGuidHob (&gEfiXenInfoGuid);
-  if (GuidHob == NULL) {
-    return EFI_SUCCESS;
-  }
-
-  //
-  // Detect Xen ACPI table and get the pointer
-  //
-  XenAcpiTablePointerStructure = AllocateZeroPool (sizeof (XEN_ACPI_TABLE_POINTER));
-  ASSERT (XenAcpiTablePointerStructure);
-
-  InitializeXenAcpiTablePointer();
-  XenAcpiTableDetect();
-
-  //
-  // Construct the AcpiTableInstance, and then publish Xen ACPI table
-  // Initialize our protocol
-  //
-  AcpiTableInstance = AllocateZeroPool (sizeof (EFI_XEN_SUPPORT_ACPI_TABLE_INSTANCE));
-  ASSERT (AcpiTableInstance);
-  AcpiTableInstance->Signature = EFI_ACPI_TABLE_SIGNATURE;
-
-  //
-  // Call all constructors per produced protocols
-  //
-  Status = XenAcpiTableConstructor (AcpiTableInstance, XenAcpiTablePointerStructure);
-  if (EFI_ERROR (Status)) {
-    gBS->FreePool (AcpiTableInstance);
-    return EFI_LOAD_ERROR;
-  }
-
-  //
-  // Find any already-installed AcpiTable protocols and override them
-  //
-  Installed     = FALSE;
-  HandleBuffer  = NULL;
-  Status = gBS->LocateHandleBuffer (
-                  ByProtocol,
-                  &gEfiAcpiTableProtocolGuid,
-                  NULL,
-                  &NumHandles,
-                  &HandleBuffer
-                  );
-
-  if (Status == EFI_SUCCESS) {
+  if (GuidHob != NULL) {
     //
-    // Loop through the handles
+    // We are running in Xen. Detect Xen ACPI table and get the pointer
     //
-    for (Index = 0; Index < NumHandles; Index++) {
-      Status = gBS->HandleProtocol (
-                      HandleBuffer[Index],
-                      &gEfiAcpiTableProtocolGuid,
-                      (VOID **) &OldAcpiTableInterface
-                      );
-      if (Status == EFI_SUCCESS) {
-        if (gBS->ReinstallProtocolInterface (
-                  HandleBuffer[Index],
-                  &gEfiAcpiTableProtocolGuid,
-                  OldAcpiTableInterface,
-                  &AcpiTableInstance->AcpiTableProtocol
-                  ) == EFI_SUCCESS) {
-          Installed = TRUE;
-        }
-      }
+    XenAcpiTablePointerStructure = AllocateZeroPool (sizeof (XEN_ACPI_TABLE_POINTER));
+    ASSERT (XenAcpiTablePointerStructure);
+
+    InitializeXenAcpiTablePointer();
+    DetectXenAcpiTable();
+
+    //
+    // If RSDP is found, we can get the Xen ACPI Tables
+    //
+    if (XenAcpiTablePointerStructure->XenRsdp1Ptr || XenAcpiTablePointerStructure->XenRsdp2Ptr) {
+
+      //
+      // Get Xen ACPI table successfully
+      //
+      return EFI_SUCCESS;
+    }
+    else {
+      gBS->FreePool (XenAcpiTablePointerStructure);
     }
   }
 
-  if (HandleBuffer != NULL) {
-    FreePool (HandleBuffer);
+  return EFI_NOT_FOUND;
+}
+
+/**
+  Locate the first instance of a protocol.  If the protocol requested is an
+  FV protocol, then it will return the first FV that contains the ACPI table
+  storage file.
+
+  @param  Instance      Return pointer to the first instance of the protocol
+
+  @return EFI_SUCCESS           The function completed successfully.
+  @return EFI_NOT_FOUND         The protocol could not be located.
+  @return EFI_OUT_OF_RESOURCES  There are not enough resources to find the protocol.
+
+**/
+EFI_STATUS
+LocateFvInstanceWithTables (
+  OUT EFI_FIRMWARE_VOLUME2_PROTOCOL **Instance
+  )
+{
+  EFI_STATUS                    Status;
+  EFI_HANDLE                    *HandleBuffer;
+  UINTN                         NumberOfHandles;
+  EFI_FV_FILETYPE               FileType;
+  UINT32                        FvStatus;
+  EFI_FV_FILE_ATTRIBUTES        Attributes;
+  UINTN                         Size;
+  UINTN                         Index;
+  EFI_FIRMWARE_VOLUME2_PROTOCOL *FvInstance;
+
+  FvStatus = 0;
+
+  //
+  // Locate protocol.
+  //
+  Status = gBS->LocateHandleBuffer (
+                   ByProtocol,
+                   &gEfiFirmwareVolume2ProtocolGuid,
+                   NULL,
+                   &NumberOfHandles,
+                   &HandleBuffer
+                   );
+  if (EFI_ERROR (Status)) {
+    //
+    // Defined errors at this time are not found and out of resources.
+    //
+    return Status;
   }
 
   //
-  // Add the protocol so someone can locate us if we haven't already.
+  // Looking for FV with ACPI storage file
   //
-  if (!Installed) {
-    Status = gBS->InstallProtocolInterface (
-                    &mHandle,
-                    &gEfiAcpiTableProtocolGuid,
-                    EFI_NATIVE_INTERFACE,
-                    &AcpiTableInstance->AcpiTableProtocol
-                    );
-    /*Status = gBS->InstallMultipleProtocolInterfaces (
-                    &mHandle,
-                    &gEfiAcpiTableProtocolGuid,
-                    &AcpiTableInstance->AcpiTableProtocol,
-                    NULL
-                    );*/
+
+  for (Index = 0; Index < NumberOfHandles; Index++) {
+    //
+    // Get the protocol on this handle
+    // This should not fail because of LocateHandleBuffer
+    //
+    Status = gBS->HandleProtocol (
+                     HandleBuffer[Index],
+                     &gEfiFirmwareVolume2ProtocolGuid,
+                     (VOID**) &FvInstance
+                     );
+    ASSERT_EFI_ERROR (Status);
+
+    //
+    // See if it has the ACPI storage file
+    //
+    Status = FvInstance->ReadFile (
+                           FvInstance,
+                           (EFI_GUID*)PcdGetPtr (PcdAcpiTableStorageFile),
+                           NULL,
+                           &Size,
+                           &FileType,
+                           &Attributes,
+                           &FvStatus
+                           );
+
+    //
+    // If we found it, then we are done
+    //
+    if (Status == EFI_SUCCESS) {
+      *Instance = FvInstance;
+      break;
+    }
   }
 
-  ASSERT_EFI_ERROR (Status);
+  //
+  // Our exit status is determined by the success of the previous operations
+  // If the protocol was found, Instance already points to it.
+  //
+
+  //
+  // Free any allocated buffers
+  //
+  gBS->FreePool (HandleBuffer);
 
   return Status;
 }
+
+/**
+  Entrypoint of Acpi Platform driver.
+
+  @param  ImageHandle
+  @param  SystemTable
+
+  @return EFI_SUCCESS
+  @return EFI_LOAD_ERROR
+  @return EFI_OUT_OF_RESOURCES
+
+**/
+EFI_STATUS
+EFIAPI
+AcpiPlatformEntryPoint (
+  IN EFI_HANDLE         ImageHandle,
+  IN EFI_SYSTEM_TABLE   *SystemTable
+  )
+{
+  EFI_STATUS                     Status;
+  EFI_ACPI_TABLE_PROTOCOL        *AcpiTable;
+  EFI_FIRMWARE_VOLUME2_PROTOCOL  *FwVol;
+  INTN                           Instance;
+  EFI_ACPI_COMMON_HEADER         *CurrentTable;
+  UINTN                          TableHandle;
+  UINT32                         FvStatus;
+  UINTN                          TableSize;
+  UINTN                          Size;
+  EFI_XEN_ACPI_TABLE_INSTANCE    *PrivateData;
+
+  Instance     = 0;
+  CurrentTable = NULL;
+  TableHandle  = 0;
+
+  //
+  // Find out the Xen ACPI tables
+  //
+  Status = DetectXenAcpi();
+  if (Status == EFI_SUCCESS) {
+    //
+    // Construct the AcpiTableInstance, and then publish Xen ACPI table
+    // Initialize our protocol
+    //
+    PrivateData = AllocateZeroPool (sizeof (EFI_XEN_ACPI_TABLE_INSTANCE));
+    ASSERT (PrivateData);
+    PrivateData->Signature = EFI_ACPI_TABLE_SIGNATURE;
+
+    //
+    // Call constructors
+    //
+    Status = XenAcpiTableConstructor (PrivateData);
+    if (EFI_ERROR (Status)) {
+      gBS->FreePool (PrivateData);
+      return EFI_LOAD_ERROR;
+    }
+
+    //
+    // Publish Xen ACPI tables
+    //
+    Status = PrivateData->AcpiTableProtocol.InstallAcpiTable (
+                              &PrivateData->AcpiTableProtocol,
+                              NULL,
+                              0,
+                              NULL
+                              );
+
+    if (EFI_ERROR(Status)) {
+      return EFI_ABORTED;
+    }
+  }
+  else {
+    //
+    // Find the AcpiTable protocol
+    //
+    Status = gBS->LocateProtocol (&gEfiAcpiTableProtocolGuid, NULL, (VOID**)&AcpiTable);
+    if (EFI_ERROR (Status)) {
+      return EFI_ABORTED;
+    }
+
+    //
+    // Locate the firmware volume protocol
+    //
+    Status = LocateFvInstanceWithTables (&FwVol);
+    if (EFI_ERROR (Status)) {
+      return EFI_ABORTED;
+    }
+    //
+    // Read tables from the storage file.
+    //
+    while (Status == EFI_SUCCESS) {
+
+      Status = FwVol->ReadSection (
+                        FwVol,
+                        (EFI_GUID*)PcdGetPtr (PcdAcpiTableStorageFile),
+                        EFI_SECTION_RAW,
+                        Instance,
+                        (VOID**) &CurrentTable,
+                        &Size,
+                        &FvStatus
+                        );
+      if (!EFI_ERROR(Status)) {
+        //
+        // Add the table
+        //
+        TableHandle = 0;
+
+        TableSize = ((EFI_ACPI_DESCRIPTION_HEADER *) CurrentTable)->Length;
+        ASSERT (Size >= TableSize);
+
+        //
+        // Checksum ACPI table
+        //
+        AcpiPlatformChecksum ((UINT8*)CurrentTable, TableSize, 0);
+
+        //
+        // Install ACPI table
+        //
+        Status = AcpiTable->InstallAcpiTable (
+                              AcpiTable,
+                              CurrentTable,
+                              TableSize,
+                              &TableHandle
+                              );
+        if (EFI_ERROR(Status)) {
+          return EFI_ABORTED;
+        }
+
+        //
+        // Increment the instance
+        //
+        Instance++;
+        CurrentTable = NULL;
+      }
+    }
+  }
+  return EFI_SUCCESS;
+}
+
