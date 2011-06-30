@@ -1999,7 +1999,7 @@ Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.inf
 +  MODULE_TYPE                    = DXE_DRIVER
 +  VERSION_STRING                 = 1.0
 +
-+  ENTRY_POINT                    = XenSmbiosTablePublish
++  ENTRY_POINT                    = SmbiosTablePublishEntry
 +
 +#
 +# The following information is for reference only and not required by the build tools.
@@ -2044,9 +2044,9 @@ Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.c
 ===================================================================
 --- OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.c	(revision 0)
 +++ OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.c	(revision 0)
-@@ -0,0 +1,197 @@
+@@ -0,0 +1,553 @@
 +/** @file
-+  This code passthroughs Xen hvmloader SMBIOS inside OVMF. It also installs the SMBIOS table.
++  Publish Xen hvmloader SMBIOS inside OVMF. This code parses Xen SMBIOS tables and add them into UEFI SMBIOS by calling EFI_SMBIOS_PROTOCOL=>Add.
 +
 +  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
 +
@@ -2063,9 +2063,310 @@ Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.c
 +#include "XenSmbiosDxe.h"
 +
 +//
-+// Chassis for SMBIOS entry point structure that is to be installed into EFI system config table.
++// SMBIOS entry point structure
 +//
-+SMBIOS_TABLE_ENTRY_POINT *EntryPointStructure    = NULL;
++SMBIOS_TABLE_ENTRY_POINT    *EntryPointStructure    = NULL;
++EFI_SMBIOS_PROTOCOL         *gSmbios;
++
++/**
++  Type 0 -- BIOS Information
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++VOID
++InstallSmbiosType0 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  )
++{
++  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
++
++  //
++  // BIOS info (TYPE 0)
++  // 
++  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 0, 0);
++  if (SmbiosTable.Raw == NULL) {
++    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 0 (BIOS Info) not found!\n"));
++    return ;
++  }
++
++  //
++  // Log Smbios Record Type0
++  //
++  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type0);
++
++  return;
++}
++
++/**
++  Type 1 -- System Information
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++VOID
++InstallSmbiosType1 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  )
++{
++  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
++
++  //
++  // System info (TYPE 1)
++  // 
++  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 1, 0);
++  if (SmbiosTable.Raw == NULL) {
++    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 1 (System Info) not found!\n"));
++    return ;
++  }
++
++  //
++  // Log Smbios Record Type1
++  //
++  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type1);
++
++  return;
++}
++
++/**
++  Type 3 -- System Enclosure or Chassis
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++VOID
++InstallSmbiosType3 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  )
++{
++  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
++
++  //
++  // Enclosure or Chassis info (TYPE 3)
++  // 
++  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 3, 0);
++  if (SmbiosTable.Raw == NULL) {
++    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 3 (Enclosure or Chassis Info) not found!\n"));
++    return ;
++  }
++
++  //
++  // Log Smbios Record Type3
++  //
++  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type3);
++
++  return;
++}
++
++/**
++  Type 4 -- Processor Information
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++VOID
++InstallSmbiosType4 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  )
++{
++  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
++
++  //
++  // Processor info (TYPE 4)
++  // 
++  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 4, 0);
++  if (SmbiosTable.Raw == NULL) {
++    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 4 (Processor Info) not found!\n"));
++    return ;
++  }
++
++  //
++  // Log Smbios Record Type4
++  //
++  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type4);
++
++  return ;
++}
++
++/**
++  Type 11 -- OEM Strings
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++VOID
++InstallSmbiosType11 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  )
++{
++  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
++
++  //
++  // OEM info (TYPE 11)
++  // 
++  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 11, 0);
++  if (SmbiosTable.Raw == NULL) {
++    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 11 (OEM Info) not found!\n"));
++    return ;
++  }
++
++  //
++  // Log Smbios Record Type11
++  //
++  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type11);
++
++  return ;
++}
++
++/**
++  Type 16 -- Physical Memory Array
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++VOID
++InstallSmbiosType16 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  )
++{
++  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
++
++  //
++  // Physical Memory Array info (TYPE 16)
++  // 
++  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 16, 0);
++  if (SmbiosTable.Raw == NULL) {
++    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 16 (Physical Memory Array info) not found!\n"));
++    return ;
++  }
++
++  //
++  // Log Smbios Record Type16
++  //
++  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type16);
++
++  return ;
++}
++
++/**
++  Type 17 -- Memory Device
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++VOID
++InstallSmbiosType17 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  )
++{
++  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
++
++  //
++  // Memory Device info (TYPE 17)
++  // 
++  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 17, 0);
++  if (SmbiosTable.Raw == NULL) {
++    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 17 (Memory Device Info) not found!\n"));
++    return ;
++  }
++
++  //
++  // Log Smbios Record Type17
++  //
++  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type17);
++
++  return ;
++}
++
++/**
++  Type 19 -- Memory Array Mapped Address
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++VOID
++InstallSmbiosType19 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  )
++{
++  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
++
++  //
++  // Memory Array Mapped Address info (TYPE 19)
++  // 
++  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 19, 0);
++  if (SmbiosTable.Raw == NULL) {
++    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 19 (Memory Array Mapped Address Info) not found!\n"));
++    return ;
++  }
++
++  //
++  // Log Smbios Record Type19
++  //
++  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type19);
++
++  return ;
++}
++
++/**
++  Type 20 -- Memory Device Mapped Address
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++VOID
++InstallSmbiosType20 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  )
++{
++  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
++
++  //
++  // Memory Device Mapped Address info (TYPE 20)
++  // 
++  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 20, 0);
++  if (SmbiosTable.Raw == NULL) {
++    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 20 (Memory Device Mapped Address Info) not found!\n"));
++    return ;
++  }
++
++  //
++  // Log Smbios Record Type20
++  //
++  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type20);
++
++  return ;
++}
++
++/**
++  Type 32 -- System Boot Information
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++VOID
++InstallSmbiosType32 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  )
++{
++  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
++
++  //
++  // System Boot info (TYPE 32)
++  // 
++  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 32, 0);
++  if (SmbiosTable.Raw == NULL) {
++    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 32 (System Boot Info) not found!\n"));
++    return ;
++  }
++
++  //
++  // Log Smbios Record Type32
++  //
++  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type32);
++
++  return ;
++}
 +
 +/**
 +  Figures out if Xen hvmloader provides SMBIOS for HVM.
@@ -2073,6 +2374,7 @@ Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.c
 +  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
 +
 +**/
+
 +SMBIOS_TABLE_ENTRY_POINT *
 +XenSmbiosDetect (
 +  VOID
@@ -2113,97 +2415,130 @@ Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.c
 +}
 +
 +/**
-+  Copy Xen hvmloader SMBIOS contents to OVMF SMBIOS. Produce Table
-+  Entry Point and return the pointer to it.
-+  
-+  @param  TableEntryPointStructure   On exit, points to the SMBIOS entrypoint structure.
-+                                
-+  @retval EFI_SUCCESS                Structure created sucessfully.
-+  @retval EFI_NOT_READY              Some of The SMBIOS records was not available yet.
-+  @retval EFI_OUT_OF_RESOURCES       No enough memory.
-+  
++  Get SMBIOS record length.
++
++  @param  SmbiosTable   SMBIOS pointer.
++
 +**/
-+EFI_STATUS
-+EFIAPI
-+XenSmbiosCreateTable (
-+  OUT VOID    **TableEntryPointStructure
++UINTN
++SmbiosTableLength (
++  IN SMBIOS_STRUCTURE_POINTER SmbiosTable
 +  )
 +{
-+  EFI_STATUS                      Status;
-+  EFI_PHYSICAL_ADDRESS            PhysicalAddress;
-+  SMBIOS_TABLE_ENTRY_POINT        *XenSmbiosEntryPointStructure;
++  CHAR8  *AChar;
++  UINTN  Length;
 +
-+  Status                        = EFI_SUCCESS;
-+  XenSmbiosEntryPointStructure  = NULL;
++  AChar = (CHAR8 *)(SmbiosTable.Raw + SmbiosTable.Hdr->Length);
 +
 +  //
-+  // Try to find out whether Xen hvmloader provides SMBIOS
++  // Each structure shall be terminated by a double-null (SMBIOS spec.7.1)
 +  //
-+  XenSmbiosEntryPointStructure = XenSmbiosDetect ();
-+
-+  if (XenSmbiosEntryPointStructure) {
-+    //
-+    // Initialize the EntryPointStructure with Xen SMBIOS
-+    //
-+    if (EntryPointStructure == NULL) {
-+      //
-+      // Allocate memory to SMBIOS Entry Point Structures (below 4GB)
-+      //
-+      PhysicalAddress = 0xffffffff;
-+      Status = gBS->AllocatePages (
-+                     AllocateMaxAddress,
-+                     EfiReservedMemoryType,
-+                     EFI_SIZE_TO_PAGES (sizeof (SMBIOS_TABLE_ENTRY_POINT)),
-+                     &PhysicalAddress
-+                    );
-+      if (EFI_ERROR (Status)) {
-+        return EFI_OUT_OF_RESOURCES;
-+      }
-+
-+      EntryPointStructure = (SMBIOS_TABLE_ENTRY_POINT *) (UINTN) PhysicalAddress;
-+
-+      CopyMem (
-+        EntryPointStructure,
-+        (VOID *) (UINTN) XenSmbiosEntryPointStructure,
-+        sizeof (SMBIOS_TABLE_ENTRY_POINT)
-+       );
-+    }
-+
-+    //
-+    // Allocate memory to Structure Table (below 4GB)
-+    //
-+    PhysicalAddress = 0xffffffff;
-+    Status = gBS->AllocatePages (
-+                    AllocateMaxAddress,
-+                    EfiReservedMemoryType,
-+                    EFI_SIZE_TO_PAGES (EntryPointStructure->TableLength),
-+                    &PhysicalAddress
-+                    );
-+    if (EFI_ERROR (Status)) {
-+      FreePages ((VOID*) EntryPointStructure, EFI_SIZE_TO_PAGES (sizeof (SMBIOS_TABLE_ENTRY_POINT)));
-+      EntryPointStructure = NULL;
-+      return EFI_OUT_OF_RESOURCES;
-+    }
-+
-+    CopyMem (
-+      (VOID *) (UINTN) PhysicalAddress,
-+      (VOID *) (UINTN) EntryPointStructure->TableAddress,
-+      EntryPointStructure->TableLength
-+     );
-+
-+    EntryPointStructure->TableAddress = (UINT32) PhysicalAddress;
-+
-+    //
-+    // Returns the pointer
-+    //
-+    *TableEntryPointStructure = EntryPointStructure;
-+
++  while ((*AChar != 0) || (*(AChar + 1) != 0)) {
++    AChar ++;
 +  }
-+
-+  return EFI_SUCCESS;
++  Length = ((UINTN)AChar - (UINTN)SmbiosTable.Raw + 2);
++  
++  return Length;
 +}
 +
++/**
++  Get SMBIOS record by type.
 +
++  @param  Smbios       SMBIOS entry point structure pointer.
++  @param  Type         Type of SMBIOS record.
++  @param  Index        Index.
++
++**/
++SMBIOS_STRUCTURE_POINTER
++GetSmbiosTableFromType (
++  IN SMBIOS_TABLE_ENTRY_POINT  *Smbios,
++  IN UINT8                     Type,
++  IN UINTN                     Index
++  )
++{
++  SMBIOS_STRUCTURE_POINTER SmbiosTable;
++  UINTN                    SmbiosTypeIndex;
++  
++  SmbiosTypeIndex = 0;
++  SmbiosTable.Raw = (UINT8 *)(UINTN)Smbios->TableAddress;
++  if (SmbiosTable.Raw == NULL) {
++    return SmbiosTable;
++  }
++  while ((SmbiosTypeIndex != Index) || (SmbiosTable.Hdr->Type != Type)) {
++    if (SmbiosTable.Hdr->Type == 127) {
++      SmbiosTable.Raw = NULL;
++      return SmbiosTable;
++    }
++    if (SmbiosTable.Hdr->Type == Type) {
++      SmbiosTypeIndex ++;
++    }
++
++    //
++    // Get the structure address
++    //
++    SmbiosTable.Raw = (UINT8 *)(SmbiosTable.Raw + SmbiosTableLength (SmbiosTable));
++  }
++
++  return SmbiosTable;
++}
++
++/**
++  Get SMBIOS String.
++
++  @param  SmbiosTable   SMBIOS pointer.
++  @param  String        SMBIOS string.
++
++**/
++CHAR8 *
++GetSmbiosString (
++  IN SMBIOS_STRUCTURE_POINTER  SmbiosTable,
++  IN SMBIOS_TABLE_STRING       String
++  )
++{
++  CHAR8      *AString;
++  UINT8      Index;
++
++  Index = 1;
++  AString = (CHAR8 *)(SmbiosTable.Raw + SmbiosTable.Hdr->Length);
++  while (Index != String) {
++    while (*AString != 0) {
++      AString ++;
++    }
++    AString ++;
++    if (*AString == 0) {
++      return AString;
++    }
++    Index ++;
++  }
++
++  return AString;
++}
++
++/**
++  Log SMBIOS record.
++
++  @param  Smbios   Pointer to SMBIOS protocol instance.
++  @param  Buffer   Pointer to the data buffer.
++
++**/
++VOID
++LogSmbiosData (
++  IN   EFI_SMBIOS_PROTOCOL        *Smbios,
++  IN   UINT8                      *Buffer
++  )
++{
++  EFI_STATUS         Status;
++  EFI_SMBIOS_HANDLE  SmbiosHandle;
++  
++  SmbiosHandle = 0;
++  Status = Smbios->Add (
++                     Smbios,
++                     NULL,
++                     &SmbiosHandle,
++                     (EFI_SMBIOS_TABLE_HEADER*)Buffer
++                     );
++  ASSERT_EFI_ERROR (Status);
++}
 +
 +/**
 +  Installs the Xen hvmloader Smbios Table to the System Table.
@@ -2217,12 +2552,11 @@ Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.c
 +**/
 +EFI_STATUS
 +EFIAPI
-+XenSmbiosTablePublish (
++SmbiosTablePublishEntry (
 +  IN EFI_HANDLE           ImageHandle,
 +  IN EFI_SYSTEM_TABLE     *SystemTable
 +  )
 +{
-+  UINT8                     *Eps;
 +  EFI_STATUS                Status;
 +  EFI_HOB_GUID_TYPE         *GuidHob;
 +
@@ -2232,12 +2566,35 @@ Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.c
 +  GuidHob = GetFirstGuidHob (&gEfiXenInfoGuid);
 +  if (GuidHob != NULL) {
 +    //
-+    // We are running inside Xen HVM, and then publish Xen hvmloader SMBIOS
++    // We are running inside Xen HVM. Then, find the Xen SMBIOS.
 +    //
-+    Status = XenSmbiosCreateTable ((VOID **) &Eps);
-+    if (!EFI_ERROR (Status)) {
-+      gBS->InstallConfigurationTable (&gEfiSmbiosTableGuid, Eps);
++    EntryPointStructure = XenSmbiosDetect();
++    if (EntryPointStructure == NULL) {
++      return EFI_NOT_FOUND;
 +    }
++
++    //
++    // Find the SMBIOS protocol 
++    //
++    Status = gBS->LocateProtocol (
++                    &gEfiSmbiosProtocolGuid,
++                    NULL,
++                    (VOID**)&gSmbios
++                    );
++    if (EFI_ERROR (Status)) {
++      return Status;
++    }
++
++    InstallSmbiosType0 (EntryPointStructure);
++    InstallSmbiosType1 (EntryPointStructure);
++    InstallSmbiosType3 (EntryPointStructure);
++    InstallSmbiosType4 (EntryPointStructure);
++    InstallSmbiosType11 (EntryPointStructure);
++    InstallSmbiosType16 (EntryPointStructure);
++    InstallSmbiosType17 (EntryPointStructure);
++    InstallSmbiosType19 (EntryPointStructure);
++    InstallSmbiosType20 (EntryPointStructure);
++    InstallSmbiosType32 (EntryPointStructure);
 +  }
 +
 +  return EFI_SUCCESS;
@@ -2246,7 +2603,7 @@ Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.h
 ===================================================================
 --- OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.h	(revision 0)
 +++ OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.h	(revision 0)
-@@ -0,0 +1,41 @@
+@@ -0,0 +1,160 @@
 +/** @file
 +  This code passthroughs Xen hvmloader SMBIOS inside OVMF.
 +
@@ -2286,6 +2643,125 @@ Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.h
 +#define XEN_SMBIOS_PHYSICAL_END           0x000F0000
 +
 +extern EFI_GUID gEfiXenInfoGuid;
++
++/**
++  Figures out if Xen hvmloader provides SMBIOS for HVM.
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++SMBIOS_TABLE_ENTRY_POINT *
++XenSmbiosDetect (
++  VOID
++  );
++
++/**
++  Get SMBIOS record by type.
++
++  @param  Smbios       SMBIOS entry point structure pointer.
++  @param  Type         Type of SMBIOS record.
++  @param  Index        Index.
++
++**/
++SMBIOS_STRUCTURE_POINTER
++GetSmbiosTableFromType (
++  IN SMBIOS_TABLE_ENTRY_POINT  *Smbios,
++  IN UINT8                 Type,
++  IN UINTN                 Index
++  );
++
++/**
++  Get SMBIOS String.
++
++  @param  SmbiosTable   SMBIOS pointer.
++  @param  String        SMBIOS string.
++
++**/
++CHAR8 *
++GetSmbiosString (
++  IN SMBIOS_STRUCTURE_POINTER  SmbiosTable,
++  IN SMBIOS_TABLE_STRING       String
++  );
++
++/**
++  Logs SMBIOS record.
++
++  @param  Smbios   Pointer to SMBIOS protocol instance.
++  @param  Buffer   Pointer to the data buffer.
++
++**/
++VOID
++LogSmbiosData (
++  IN   EFI_SMBIOS_PROTOCOL        *Smbios,
++  IN   UINT8                      *Buffer
++  );
++
++/**
++  Get the SMBIOS recorde from Xen SMBIOS entry point and install it.
++
++  Type 0    BIOS Information
++  Type 1    System Information
++  Type 3    System Enclosure or Chassis
++  Type 4    Processor Information
++  Type 11   OEM Strings
++  Type 16   Physical Memory Array
++  Type 17   Memory Device
++  Type 19   Memory Array Mapped Address
++  Type 20   Memory Device Mapped Address
++  Type 32   System Boot Information
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++VOID
++InstallSmbiosType0 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  );
++
++VOID
++InstallSmbiosType1 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  );
++
++VOID
++InstallSmbiosType3 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  );
++
++VOID
++InstallSmbiosType4 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  );
++
++VOID
++InstallSmbiosType11 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  );
++
++VOID
++InstallSmbiosType16 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  );
++
++VOID
++InstallSmbiosType17 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  );
++
++VOID
++InstallSmbiosType19 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  );
++
++VOID
++InstallSmbiosType20 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  );
++
++VOID
++InstallSmbiosType32 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  );
 +
 +#endif
 Index: OvmfPkg/OvmfPkgX64.fdf
