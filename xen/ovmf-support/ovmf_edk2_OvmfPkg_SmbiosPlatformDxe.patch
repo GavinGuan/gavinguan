@@ -1,79 +1,10 @@
-Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.inf
+Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.c
 ===================================================================
---- OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.inf	(revision 0)
-+++ OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.inf	(revision 0)
-@@ -0,0 +1,64 @@
-+## @file
-+#  Component description file for Xen hvmloader Smbios module. 
-+#  This driver initializes and installs the Xen hvmloader SMBIOS protocol.
-+#
-+#  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
-+#
-+#  This program and the accompanying materials
-+#  are licensed and made available under the terms and conditions of the BSD License
-+#  which accompanies this distribution. The full text of the license may be found at
-+#  http://opensource.org/licenses/bsd-license.php
-+#  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
-+#  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
-+#
-+#
-+##
-+
-+[Defines]
-+  INF_VERSION                    = 0x00010005
-+  BASE_NAME                      = XenSmbiosDxe
-+  FILE_GUID                      = 4110465d-5ff3-4f4b-b580-24ed0d06747a
-+  MODULE_TYPE                    = DXE_DRIVER
-+  VERSION_STRING                 = 1.0
-+
-+  ENTRY_POINT                    = SmbiosTablePublishEntry
-+
-+#
-+# The following information is for reference only and not required by the build tools.
-+#
-+#  VALID_ARCHITECTURES           = IA32 X64 IPF EBC
-+#
-+
-+[Sources]
-+  XenSmbiosDxe.c
-+  XenSmbiosDxe.h
-+
-+[Packages]
-+  MdePkg/MdePkg.dec
-+  MdeModulePkg/MdeModulePkg.dec
-+  OvmfPkg/OvmfPkg.dec
-+
-+[LibraryClasses]
-+  UefiBootServicesTableLib
-+  MemoryAllocationLib
-+  BaseMemoryLib
-+  BaseLib
-+  UefiLib
-+  UefiDriverEntryPoint
-+  DebugLib
-+  PcdLib
-+  HobLib
-+
-+[Protocols]
-+  gEfiSmbiosProtocolGuid                      # PROTOCOL ALWAYS_PRODUCED
-+
-+[Guids]
-+  gEfiEventReadyToBootGuid                    # PROTOCOL ALWAYS_CONSUMED
-+  gEfiSmbiosTableGuid                         # PROTOCOL ALWAYS_CONSUMED
-+  gEfiXenInfoGuid
-+
-+[FixedPcd]
-+  gEfiMdeModulePkgTokenSpaceGuid.PcdSmbiosVersion
-+
-+[Depex]
-+  TRUE
-Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.c
-===================================================================
---- OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.c	(revision 0)
-+++ OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.c	(revision 0)
+--- OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.c	(revision 0)
++++ OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.c	(revision 0)
 @@ -0,0 +1,553 @@
 +/** @file
-+  Publish Xen hvmloader SMBIOS inside OVMF. This code parses Xen SMBIOS tables and add them into UEFI SMBIOS by calling EFI_SMBIOS_PROTOCOL=>Add.
++  Publish Xen hvmloader SMBIOS inside OVMF. This code parses Xen SMBIOS tables and add them into UEFI SMBIOS by calling SMBIOS protocol.
 +
 +  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
 +
@@ -87,7 +18,7 @@ Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.c
 +
 +**/
 +
-+#include "XenSmbiosDxe.h"
++#include "SmbiosPlatformDxe.h"
 +
 +//
 +// SMBIOS entry point structure
@@ -110,7 +41,7 @@ Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.c
 +
 +  //
 +  // BIOS info (TYPE 0)
-+  // 
++  //
 +  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 0, 0);
 +  if (SmbiosTable.Raw == NULL) {
 +    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 0 (BIOS Info) not found!\n"));
@@ -625,10 +556,10 @@ Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.c
 +
 +  return EFI_SUCCESS;
 +}
-Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.h
+Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.h
 ===================================================================
---- OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.h	(revision 0)
-+++ OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.h	(revision 0)
+--- OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.h	(revision 0)
++++ OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.h	(revision 0)
 @@ -0,0 +1,160 @@
 +/** @file
 +  This code passthroughs Xen hvmloader SMBIOS inside OVMF.
@@ -790,3 +721,72 @@ Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.h
 +  );
 +
 +#endif
+Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
+===================================================================
+--- OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf	(revision 0)
++++ OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf	(revision 0)
+@@ -0,0 +1,64 @@
++## @file
++#  Component description file for Xen hvmloader Smbios module. 
++#  This driver initializes and installs the Xen hvmloader SMBIOS protocol.
++#
++#  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++#
++#  This program and the accompanying materials
++#  are licensed and made available under the terms and conditions of the BSD License
++#  which accompanies this distribution. The full text of the license may be found at
++#  http://opensource.org/licenses/bsd-license.php
++#  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++#  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++#
++#
++##
++
++[Defines]
++  INF_VERSION                    = 0x00010005
++  BASE_NAME                      = SmbiosPlatformDxe
++  FILE_GUID                      = 4110465d-5ff3-4f4b-b580-24ed0d06747a
++  MODULE_TYPE                    = DXE_DRIVER
++  VERSION_STRING                 = 1.0
++
++  ENTRY_POINT                    = SmbiosTablePublishEntry
++
++#
++# The following information is for reference only and not required by the build tools.
++#
++#  VALID_ARCHITECTURES           = IA32 X64 IPF EBC
++#
++
++[Sources]
++  SmbiosPlatformDxe.c
++  SmbiosPlatformDxe.h
++
++[Packages]
++  MdePkg/MdePkg.dec
++  MdeModulePkg/MdeModulePkg.dec
++  OvmfPkg/OvmfPkg.dec
++
++[LibraryClasses]
++  UefiBootServicesTableLib
++  MemoryAllocationLib
++  BaseMemoryLib
++  BaseLib
++  UefiLib
++  UefiDriverEntryPoint
++  DebugLib
++  PcdLib
++  HobLib
++
++[Protocols]
++  gEfiSmbiosProtocolGuid                      # PROTOCOL ALWAYS_PRODUCED
++
++[Guids]
++  gEfiEventReadyToBootGuid                    # PROTOCOL ALWAYS_CONSUMED
++  gEfiSmbiosTableGuid                         # PROTOCOL ALWAYS_CONSUMED
++  gEfiXenInfoGuid
++
++[FixedPcd]
++  gEfiMdeModulePkgTokenSpaceGuid.PcdSmbiosVersion
++
++[Depex]
++  TRUE

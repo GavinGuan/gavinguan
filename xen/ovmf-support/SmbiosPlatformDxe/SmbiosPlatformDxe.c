@@ -1,5 +1,5 @@
 /** @file
-  Publish Xen hvmloader SMBIOS inside OVMF. This code parses Xen SMBIOS tables and add them into UEFI SMBIOS by calling EFI_SMBIOS_PROTOCOL=>Add.
+  Publish Xen hvmloader SMBIOS inside OVMF. This code parses Xen SMBIOS tables and add them into UEFI SMBIOS by calling SMBIOS protocol.
 
   Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
 
@@ -13,7 +13,7 @@
 
 **/
 
-#include "XenSmbiosDxe.h"
+#include "SmbiosPlatformDxe.h"
 
 //
 // SMBIOS entry point structure
@@ -36,7 +36,7 @@ InstallSmbiosType0 (
 
   //
   // BIOS info (TYPE 0)
-  // 
+  //
   SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 0, 0);
   if (SmbiosTable.Raw == NULL) {
     DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 0 (BIOS Info) not found!\n"));

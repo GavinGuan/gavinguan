@@ -1,7 +1,7 @@
 patch:
 -----
 ovmf_edk2_OvmfPkg_AcpiPlatformDxe.patch
-ovmf_edk2_OvmfPkg_XenSmbiosDxe.patch
+ovmf_edk2_OvmfPkg_SmbiosPlatformDxe.patch
 ovmf_edk2_OvmfPkg_configuration.patch
 ovmf_xen_smbios_acpi_publish.patch
 
@@ -23,4 +23,4 @@ Xen ACPI Tables published inside UEFI
 Xen SMBIOS published inside UEFI
 -----
 1) The patches publish Xen SMBIOS inside UEFI. Support both QEMU and Xen.
-2) OvmfPkg/XenSmbiosDxe can detect the Xen environment and Xen hvmloader SMBIOS. After that, it parses Xen BIOS structure and calls EFI_SMBIOS_PROTOCOL=>Add to add them to UEFI system.
+2) OvmfPkg/SmbiosPlatformDxe can detect the Xen environment and Xen hvmloader SMBIOS. After that, it parses Xen BIOS structure and calls EFI_SMBIOS_PROTOCOL=>Add to add them to UEFI system.

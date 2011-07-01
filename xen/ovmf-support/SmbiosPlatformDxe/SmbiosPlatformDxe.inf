@@ -16,7 +16,7 @@
 
 [Defines]
   INF_VERSION                    = 0x00010005
-  BASE_NAME                      = XenSmbiosDxe
+  BASE_NAME                      = SmbiosPlatformDxe
   FILE_GUID                      = 4110465d-5ff3-4f4b-b580-24ed0d06747a
   MODULE_TYPE                    = DXE_DRIVER
   VERSION_STRING                 = 1.0
@@ -30,8 +30,8 @@
 #
 
 [Sources]
-  XenSmbiosDxe.c
-  XenSmbiosDxe.h
+  SmbiosPlatformDxe.c
+  SmbiosPlatformDxe.h
 
 [Packages]
   MdePkg/MdePkg.dec

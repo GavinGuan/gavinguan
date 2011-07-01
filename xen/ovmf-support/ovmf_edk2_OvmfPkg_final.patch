@@ -1,3 +1,260 @@
+Index: OvmfPkg/PlatformPei/Platform.c
+===================================================================
+--- OvmfPkg/PlatformPei/Platform.c	(revision 11711)
++++ OvmfPkg/PlatformPei/Platform.c	(working copy)
+@@ -1,6 +1,8 @@
+ /**@file
+   Platform PEI driver
+ 
++  Modified to support Xen HVM - Andrei Warkentin <andreiw@motorola.com>
++
+   Copyright (c) 2006 - 2010, Intel Corporation. All rights reserved.<BR>
+   This program and the accompanying materials
+   are licensed and made available under the terms and conditions of the BSD License
+@@ -30,11 +32,14 @@
+ #include <Library/PeiServicesLib.h>
+ #include <Library/ResourcePublicationLib.h>
+ #include <Guid/MemoryTypeInformation.h>
++#include <Guid/XenInfo.h>
+ #include <Ppi/MasterBootMode.h>
+ 
+ #include "Platform.h"
+ #include "Cmos.h"
+ 
++EFI_XEN_INFO mXenInfo;
++
+ EFI_MEMORY_TYPE_INFORMATION mDefaultMemoryTypeInformation[] = {
+   { EfiACPIMemoryNVS,       0x004 },
+   { EfiACPIReclaimMemory,   0x008 },
+@@ -75,6 +80,24 @@
+ 
+ 
+ VOID
++AddReservedMemoryBaseSizeHob (
++  EFI_PHYSICAL_ADDRESS        MemoryBase,
++  UINT64                      MemorySize
++  )
++{
++  BuildResourceDescriptorHob (
++    EFI_RESOURCE_MEMORY_RESERVED,
++      EFI_RESOURCE_ATTRIBUTE_PRESENT     |
++      EFI_RESOURCE_ATTRIBUTE_INITIALIZED |
++      EFI_RESOURCE_ATTRIBUTE_UNCACHEABLE |
++      EFI_RESOURCE_ATTRIBUTE_TESTED,
++    MemoryBase,
++    MemorySize
++    );
++}
++
++
++VOID
+ AddIoMemoryRangeHob (
+   EFI_PHYSICAL_ADDRESS        MemoryBase,
+   EFI_PHYSICAL_ADDRESS        MemoryLimit
+@@ -147,7 +170,8 @@
+ 
+ VOID
+ MemMapInitialization (
+-  EFI_PHYSICAL_ADDRESS  TopOfMemory
++  EFI_PHYSICAL_ADDRESS  TopOfMemory,
++  BOOLEAN               XenHvm
+   )
+ {
+   //
+@@ -162,24 +186,46 @@
+   //
+   // Add PCI IO Port space available for PCI resource allocations.
+   //
+-  BuildResourceDescriptorHob (
+-    EFI_RESOURCE_IO,
++
++  if (XenHvm) {
++    BuildResourceDescriptorHob (
++      EFI_RESOURCE_IO,
+       EFI_RESOURCE_ATTRIBUTE_PRESENT     |
+       EFI_RESOURCE_ATTRIBUTE_INITIALIZED,
+-    0x1000,
+-    0xF000
+-    );
++      0xC000,
++      0x4000
++      );
++  } else {
++    BuildResourceDescriptorHob (
++      EFI_RESOURCE_IO,
++      EFI_RESOURCE_ATTRIBUTE_PRESENT     |
++      EFI_RESOURCE_ATTRIBUTE_INITIALIZED,
++      0x1000,
++      0xF000
++      );
++  }
+ 
+   //
+   // Add PCI MMIO space available to PCI resource allocations
+   //
+-  if (TopOfMemory < BASE_2GB) {
+-    AddIoMemoryBaseSizeHob (BASE_2GB, 0xFEC00000 - BASE_2GB);
++
++  if (XenHvm) {
++    AddIoMemoryBaseSizeHob (TopOfMemory, 0xFC000000 - TopOfMemory);
+   } else {
+-    AddIoMemoryBaseSizeHob (TopOfMemory, 0xFEC00000 - TopOfMemory);
++    if (TopOfMemory < BASE_2GB) {
++      AddIoMemoryBaseSizeHob (BASE_2GB, 0xFEC00000 - BASE_2GB);
++    } else {
++      AddIoMemoryBaseSizeHob (TopOfMemory, 0xFEC00000 - TopOfMemory);
++    }
+   }
+ 
+   //
++  // Reserve away HVMLOADER reserved memory [0xFC000000,0xFD000000).
++  // This needs to match HVMLOADER RESERVED_MEMBASE/RESERVED_MEMSIZE.
++  //
++  AddReservedMemoryBaseSizeHob (0xFC000000, 0x1000000);
++
++  //
+   // Local APIC range
+   //
+   AddIoMemoryBaseSizeHob (0xFEC80000, SIZE_512KB);
+@@ -209,11 +255,6 @@
+   // Build the CPU hob with 36-bit addressing and 16-bits of IO space.
+   //
+   BuildCpuHob (36, 16);
+-
+-  //
+-  // Set the PM I/O base address to 0x400
+-  //
+-  PciAndThenOr32 (PCI_LIB_ADDRESS (0, 1, 3, 0x40), (UINT32) ~0xfc0, 0x400);
+ }
+ 
+ 
+@@ -277,8 +318,87 @@
+   }
+ }
+ 
++/**
++  Connects to the Hypervisor.
+ 
++  @param  XenLeaf     CPUID index used to connect.
++
++  @return EFI_STATUS
++
++**/
++EFI_STATUS
++XenConnect (
++  UINT32 XenLeaf
++  )
++{
++  UINT32 Index;
++  UINT32 TransferReg;
++  UINT32 TransferPages;
++  UINT32 XenVersion;
++
++  AsmCpuid (XenLeaf + 2, &TransferPages, &TransferReg, NULL, NULL);
++  mXenInfo.HyperPages = AllocatePages (TransferPages);
++  if (!mXenInfo.HyperPages) {
++    return EFI_OUT_OF_RESOURCES;
++  }
++
++  for (Index = 0; Index < TransferPages; Index++) {
++    AsmWriteMsr64 (TransferReg,
++                   (UINTN) mXenInfo.HyperPages +
++		   (Index << EFI_PAGE_SHIFT) + Index);
++  }
++
++  AsmCpuid (XenLeaf + 1, &XenVersion, NULL, NULL, NULL);
++  DEBUG ((EFI_D_ERROR, "Detected Xen version %d.%d\n",
++	  XenVersion >> 16, XenVersion & 0xFFFF));
++  mXenInfo.VersionMajor = XenVersion >> 16;
++  mXenInfo.VersionMinor = XenVersion & 0xFFFF;
++
++  /* TBD: Locate hvm_info and reserve it away. */
++  mXenInfo.HvmInfo = NULL;
++
++  BuildGuidDataHob (
++    &gEfiXenInfoGuid,
++    &mXenInfo,
++    sizeof(mXenInfo)
++    );
++
++  return EFI_SUCCESS;
++}
++
+ /**
++  Figures out if we are running inside Xen HVM.
++
++  @return UINT32     CPUID index used to connect to HV.
++
++**/
++UINT32
++XenDetect (
++  VOID
++  )
++{
++
++  UINT32 XenLeaf;
++  UINT8 Signature[13];
++
++  for (XenLeaf = 0x40000000; XenLeaf < 0x40010000; XenLeaf += 0x100) {
++    AsmCpuid (XenLeaf, NULL, (UINT32 *) &Signature[0],
++              (UINT32 *) &Signature[4],
++              (UINT32 *) &Signature[8]);
++    Signature[12] = '\0';
++
++    if (!AsciiStrCmp ((CHAR8 *) Signature, "XenVMMXenVMM")) {
++      return XenLeaf;
++    }
++  }
++
++  return 0;
++
++
++  return TRUE;
++}
++
++/**
+   Perform Platform PEI initialization.
+ 
+   @param  FileHandle      Handle of the file being invoked.
+@@ -295,18 +415,25 @@
+   )
+ {
+   EFI_PHYSICAL_ADDRESS  TopOfMemory;
++  UINT32 XenLeaf;
+ 
+   DEBUG ((EFI_D_ERROR, "Platform PEIM Loaded\n"));
+ 
++  XenLeaf = XenDetect ();
++
+   DebugDumpCmos ();
+ 
+   TopOfMemory = MemDetect ();
+ 
++  if (XenLeaf) {
++    XenConnect (XenLeaf);
++  }
++
+   ReserveEmuVariableNvStore ();
+ 
+   PeiFvInitialization ();
+ 
+-  MemMapInitialization (TopOfMemory);
++  MemMapInitialization (TopOfMemory, XenLeaf ? TRUE : FALSE);
+ 
+   MiscInitialization ();
+ 
+Index: OvmfPkg/PlatformPei/PlatformPei.inf
+===================================================================
+--- OvmfPkg/PlatformPei/PlatformPei.inf	(revision 11711)
++++ OvmfPkg/PlatformPei/PlatformPei.inf	(working copy)
+@@ -41,6 +41,7 @@
+ 
+ [Guids]
+   gEfiMemoryTypeInformationGuid
++  gEfiXenInfoGuid
+ 
+ [LibraryClasses]
+   DebugLib
 Index: OvmfPkg/AcpiPlatformDxe/AcpiPlatform.c
 ===================================================================
 --- OvmfPkg/AcpiPlatformDxe/AcpiPlatform.c	(revision 0)
@@ -1561,263 +1818,6 @@ Index: OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf
 +[Depex]
 +  gEfiAcpiTableProtocolGuid
 +
-Index: OvmfPkg/PlatformPei/Platform.c
-===================================================================
---- OvmfPkg/PlatformPei/Platform.c	(revision 11711)
-+++ OvmfPkg/PlatformPei/Platform.c	(working copy)
-@@ -1,6 +1,8 @@
- /**@file
-   Platform PEI driver
- 
-+  Modified to support Xen HVM - Andrei Warkentin <andreiw@motorola.com>
-+
-   Copyright (c) 2006 - 2010, Intel Corporation. All rights reserved.<BR>
-   This program and the accompanying materials
-   are licensed and made available under the terms and conditions of the BSD License
-@@ -30,11 +32,14 @@
- #include <Library/PeiServicesLib.h>
- #include <Library/ResourcePublicationLib.h>
- #include <Guid/MemoryTypeInformation.h>
-+#include <Guid/XenInfo.h>
- #include <Ppi/MasterBootMode.h>
- 
- #include "Platform.h"
- #include "Cmos.h"
- 
-+EFI_XEN_INFO mXenInfo;
-+
- EFI_MEMORY_TYPE_INFORMATION mDefaultMemoryTypeInformation[] = {
-   { EfiACPIMemoryNVS,       0x004 },
-   { EfiACPIReclaimMemory,   0x008 },
-@@ -75,6 +80,24 @@
- 
- 
- VOID
-+AddReservedMemoryBaseSizeHob (
-+  EFI_PHYSICAL_ADDRESS        MemoryBase,
-+  UINT64                      MemorySize
-+  )
-+{
-+  BuildResourceDescriptorHob (
-+    EFI_RESOURCE_MEMORY_RESERVED,
-+      EFI_RESOURCE_ATTRIBUTE_PRESENT     |
-+      EFI_RESOURCE_ATTRIBUTE_INITIALIZED |
-+      EFI_RESOURCE_ATTRIBUTE_UNCACHEABLE |
-+      EFI_RESOURCE_ATTRIBUTE_TESTED,
-+    MemoryBase,
-+    MemorySize
-+    );
-+}
-+
-+
-+VOID
- AddIoMemoryRangeHob (
-   EFI_PHYSICAL_ADDRESS        MemoryBase,
-   EFI_PHYSICAL_ADDRESS        MemoryLimit
-@@ -147,7 +170,8 @@
- 
- VOID
- MemMapInitialization (
--  EFI_PHYSICAL_ADDRESS  TopOfMemory
-+  EFI_PHYSICAL_ADDRESS  TopOfMemory,
-+  BOOLEAN               XenHvm
-   )
- {
-   //
-@@ -162,24 +186,46 @@
-   //
-   // Add PCI IO Port space available for PCI resource allocations.
-   //
--  BuildResourceDescriptorHob (
--    EFI_RESOURCE_IO,
-+
-+  if (XenHvm) {
-+    BuildResourceDescriptorHob (
-+      EFI_RESOURCE_IO,
-       EFI_RESOURCE_ATTRIBUTE_PRESENT     |
-       EFI_RESOURCE_ATTRIBUTE_INITIALIZED,
--    0x1000,
--    0xF000
--    );
-+      0xC000,
-+      0x4000
-+      );
-+  } else {
-+    BuildResourceDescriptorHob (
-+      EFI_RESOURCE_IO,
-+      EFI_RESOURCE_ATTRIBUTE_PRESENT     |
-+      EFI_RESOURCE_ATTRIBUTE_INITIALIZED,
-+      0x1000,
-+      0xF000
-+      );
-+  }
- 
-   //
-   // Add PCI MMIO space available to PCI resource allocations
-   //
--  if (TopOfMemory < BASE_2GB) {
--    AddIoMemoryBaseSizeHob (BASE_2GB, 0xFEC00000 - BASE_2GB);
-+
-+  if (XenHvm) {
-+    AddIoMemoryBaseSizeHob (TopOfMemory, 0xFC000000 - TopOfMemory);
-   } else {
--    AddIoMemoryBaseSizeHob (TopOfMemory, 0xFEC00000 - TopOfMemory);
-+    if (TopOfMemory < BASE_2GB) {
-+      AddIoMemoryBaseSizeHob (BASE_2GB, 0xFEC00000 - BASE_2GB);
-+    } else {
-+      AddIoMemoryBaseSizeHob (TopOfMemory, 0xFEC00000 - TopOfMemory);
-+    }
-   }
- 
-   //
-+  // Reserve away HVMLOADER reserved memory [0xFC000000,0xFD000000).
-+  // This needs to match HVMLOADER RESERVED_MEMBASE/RESERVED_MEMSIZE.
-+  //
-+  AddReservedMemoryBaseSizeHob (0xFC000000, 0x1000000);
-+
-+  //
-   // Local APIC range
-   //
-   AddIoMemoryBaseSizeHob (0xFEC80000, SIZE_512KB);
-@@ -209,11 +255,6 @@
-   // Build the CPU hob with 36-bit addressing and 16-bits of IO space.
-   //
-   BuildCpuHob (36, 16);
--
--  //
--  // Set the PM I/O base address to 0x400
--  //
--  PciAndThenOr32 (PCI_LIB_ADDRESS (0, 1, 3, 0x40), (UINT32) ~0xfc0, 0x400);
- }
- 
- 
-@@ -277,8 +318,87 @@
-   }
- }
- 
-+/**
-+  Connects to the Hypervisor.
- 
-+  @param  XenLeaf     CPUID index used to connect.
-+
-+  @return EFI_STATUS
-+
-+**/
-+EFI_STATUS
-+XenConnect (
-+  UINT32 XenLeaf
-+  )
-+{
-+  UINT32 Index;
-+  UINT32 TransferReg;
-+  UINT32 TransferPages;
-+  UINT32 XenVersion;
-+
-+  AsmCpuid (XenLeaf + 2, &TransferPages, &TransferReg, NULL, NULL);
-+  mXenInfo.HyperPages = AllocatePages (TransferPages);
-+  if (!mXenInfo.HyperPages) {
-+    return EFI_OUT_OF_RESOURCES;
-+  }
-+
-+  for (Index = 0; Index < TransferPages; Index++) {
-+    AsmWriteMsr64 (TransferReg,
-+                   (UINTN) mXenInfo.HyperPages +
-+		   (Index << EFI_PAGE_SHIFT) + Index);
-+  }
-+
-+  AsmCpuid (XenLeaf + 1, &XenVersion, NULL, NULL, NULL);
-+  DEBUG ((EFI_D_ERROR, "Detected Xen version %d.%d\n",
-+	  XenVersion >> 16, XenVersion & 0xFFFF));
-+  mXenInfo.VersionMajor = XenVersion >> 16;
-+  mXenInfo.VersionMinor = XenVersion & 0xFFFF;
-+
-+  /* TBD: Locate hvm_info and reserve it away. */
-+  mXenInfo.HvmInfo = NULL;
-+
-+  BuildGuidDataHob (
-+    &gEfiXenInfoGuid,
-+    &mXenInfo,
-+    sizeof(mXenInfo)
-+    );
-+
-+  return EFI_SUCCESS;
-+}
-+
- /**
-+  Figures out if we are running inside Xen HVM.
-+
-+  @return UINT32     CPUID index used to connect to HV.
-+
-+**/
-+UINT32
-+XenDetect (
-+  VOID
-+  )
-+{
-+
-+  UINT32 XenLeaf;
-+  UINT8 Signature[13];
-+
-+  for (XenLeaf = 0x40000000; XenLeaf < 0x40010000; XenLeaf += 0x100) {
-+    AsmCpuid (XenLeaf, NULL, (UINT32 *) &Signature[0],
-+              (UINT32 *) &Signature[4],
-+              (UINT32 *) &Signature[8]);
-+    Signature[12] = '\0';
-+
-+    if (!AsciiStrCmp ((CHAR8 *) Signature, "XenVMMXenVMM")) {
-+      return XenLeaf;
-+    }
-+  }
-+
-+  return 0;
-+
-+
-+  return TRUE;
-+}
-+
-+/**
-   Perform Platform PEI initialization.
- 
-   @param  FileHandle      Handle of the file being invoked.
-@@ -295,18 +415,25 @@
-   )
- {
-   EFI_PHYSICAL_ADDRESS  TopOfMemory;
-+  UINT32 XenLeaf;
- 
-   DEBUG ((EFI_D_ERROR, "Platform PEIM Loaded\n"));
- 
-+  XenLeaf = XenDetect ();
-+
-   DebugDumpCmos ();
- 
-   TopOfMemory = MemDetect ();
- 
-+  if (XenLeaf) {
-+    XenConnect (XenLeaf);
-+  }
-+
-   ReserveEmuVariableNvStore ();
- 
-   PeiFvInitialization ();
- 
--  MemMapInitialization (TopOfMemory);
-+  MemMapInitialization (TopOfMemory, XenLeaf ? TRUE : FALSE);
- 
-   MiscInitialization ();
- 
-Index: OvmfPkg/PlatformPei/PlatformPei.inf
-===================================================================
---- OvmfPkg/PlatformPei/PlatformPei.inf	(revision 11711)
-+++ OvmfPkg/PlatformPei/PlatformPei.inf	(working copy)
-@@ -41,6 +41,7 @@
- 
- [Guids]
-   gEfiMemoryTypeInformationGuid
-+  gEfiXenInfoGuid
- 
- [LibraryClasses]
-   DebugLib
 Index: OvmfPkg/OvmfPkgX64.dsc
 ===================================================================
 --- OvmfPkg/OvmfPkgX64.dsc	(revision 11711)
@@ -1826,7 +1826,7 @@ Index: OvmfPkg/OvmfPkgX64.dsc
    MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
    MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
    MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
-+  OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.inf
++  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
    PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
    UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
    UefiCpuPkg/CpuDxe/CpuDxe.inf
@@ -1847,7 +1847,7 @@ Index: OvmfPkg/OvmfPkgIa32.fdf
  INF  MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
  INF  MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
  INF  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
-+INF  OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.inf
++INF  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
  INF  PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
  INF  UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
  INF  UefiCpuPkg/CpuDxe/CpuDxe.inf
@@ -1868,7 +1868,7 @@ Index: OvmfPkg/OvmfPkgIa32.dsc
    MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
    MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
    MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
-+  OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.inf
++  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
    PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
    UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
    UefiCpuPkg/CpuDxe/CpuDxe.inf
@@ -1881,172 +1881,13 @@ Index: OvmfPkg/OvmfPkgIa32.dsc
    OvmfPkg/AcpiTables/AcpiTables.inf
  
    #
-Index: OvmfPkg/OvmfPkg.dec
+Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.c
 ===================================================================
---- OvmfPkg/OvmfPkg.dec	(revision 11711)
-+++ OvmfPkg/OvmfPkg.dec	(working copy)
-@@ -33,6 +33,7 @@
- 
- [Guids]
-   gUefiOvmfPkgTokenSpaceGuid      = {0x93bb96af, 0xb9f2, 0x4eb8, {0x94, 0x62, 0xe0, 0xba, 0x74, 0x56, 0x42, 0x36}}
-+  gEfiXenInfoGuid                 = {0xd3b46f3b, 0xd441, 0x1244, {0x9a, 0x12, 0x0, 0x12, 0x27, 0x3f, 0xc1, 0x4d}}
- 
- [Protocols]
-   gBlockMmioProtocolGuid          = {0x6b558ce3, 0x69e5, 0x4c67, {0xa6, 0x34, 0xf7, 0xfe, 0x72, 0xad, 0xbe, 0x84}}
-Index: OvmfPkg/Library/AcpiTimerLib/AcpiTimerLib.c
-===================================================================
---- OvmfPkg/Library/AcpiTimerLib/AcpiTimerLib.c	(revision 11711)
-+++ OvmfPkg/Library/AcpiTimerLib/AcpiTimerLib.c	(working copy)
-@@ -1,25 +1,36 @@
- /** @file
-   ACPI Timer implements one instance of Timer Library.
- 
-+  Modified to support Xen HVM - Andrei Warkentin <andreiw@motorola.com>
-+
-   Copyright (c) 2008, Intel Corporation. All rights reserved.<BR>
-   This program and the accompanying materials are
-   licensed and made available under the terms and conditions of the BSD License
-   which accompanies this distribution.  The full text of the license may be found at
-   http://opensource.org/licenses/bsd-license.php
--  
-+
-   THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
-   WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
- 
--**/ 
-+**/
- 
- #include <Base.h>
- #include <Library/TimerLib.h>
- #include <Library/BaseLib.h>
- #include <Library/IoLib.h>
- #include <Library/PciLib.h>
-+#include <Library/DebugLib.h>
- 
-+//
-+// PIIX4 usual base BAR.
-+//
-+
-+UINT32 TimerBaseBar = 0x401;
-+
-+#define PCI_BAR_IO             0x1
- #define ACPI_TIMER_FREQUENCY   3579545
- #define ACPI_TIMER_COUNT_SIZE  0x01000000
-+#define ACPI_TIMER_OFFSET      0x8
- 
- /**
-   The constructor function enables ACPI IO space.
-@@ -41,12 +52,22 @@
-   Device = 1;
-   // Device = 7;
- 
-+  if (PciRead8 (PCI_LIB_ADDRESS (0,Device,3,0x80)) & 1) {
-+    TimerBaseBar = PciRead32 (PCI_LIB_ADDRESS (0,Device,3,0x40));
-+    ASSERT(TimerBaseBar & PCI_BAR_IO);
-+    TimerBaseBar &= ~PCI_BAR_IO;
-+  } else {
-+    PciAndThenOr32 (PCI_LIB_ADDRESS (0,Device,3,0x40),
-+                    (UINT32) ~0xfc0, TimerBaseBar);
-+    PciOr8         (PCI_LIB_ADDRESS (0,Device,3,0x04), 0x01);
-+  }
-+
-   //
-   // ACPI Timer enable is in Bus 0, Device ?, Function 3
-   //
--  PciOr8         (PCI_LIB_ADDRESS (0,Device,3,0x04), 0x01);
--  PciAndThenOr32 (PCI_LIB_ADDRESS (0,Device,3,0x40), (UINT32) ~0xfc0, 0x400);
--  PciOr8         (PCI_LIB_ADDRESS (0,Device,3,0x80), 0x01);  return RETURN_SUCCESS;
-+
-+  PciOr8         (PCI_LIB_ADDRESS (0,Device,3,0x80), 0x01);
-+  return RETURN_SUCCESS;
- }
- 
- /**
-@@ -63,7 +84,7 @@
-   VOID
-   )
- {
--  return IoRead32 (0x408);
-+  return IoRead32 (TimerBaseBar + ACPI_TIMER_OFFSET);
- }
- 
- /**
-Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.inf
-===================================================================
---- OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.inf	(revision 0)
-+++ OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.inf	(revision 0)
-@@ -0,0 +1,64 @@
-+## @file
-+#  Component description file for Xen hvmloader Smbios module. 
-+#  This driver initializes and installs the Xen hvmloader SMBIOS protocol.
-+#
-+#  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
-+#
-+#  This program and the accompanying materials
-+#  are licensed and made available under the terms and conditions of the BSD License
-+#  which accompanies this distribution. The full text of the license may be found at
-+#  http://opensource.org/licenses/bsd-license.php
-+#  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
-+#  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
-+#
-+#
-+##
-+
-+[Defines]
-+  INF_VERSION                    = 0x00010005
-+  BASE_NAME                      = XenSmbiosDxe
-+  FILE_GUID                      = 4110465d-5ff3-4f4b-b580-24ed0d06747a
-+  MODULE_TYPE                    = DXE_DRIVER
-+  VERSION_STRING                 = 1.0
-+
-+  ENTRY_POINT                    = SmbiosTablePublishEntry
-+
-+#
-+# The following information is for reference only and not required by the build tools.
-+#
-+#  VALID_ARCHITECTURES           = IA32 X64 IPF EBC
-+#
-+
-+[Sources]
-+  XenSmbiosDxe.c
-+  XenSmbiosDxe.h
-+
-+[Packages]
-+  MdePkg/MdePkg.dec
-+  MdeModulePkg/MdeModulePkg.dec
-+  OvmfPkg/OvmfPkg.dec
-+
-+[LibraryClasses]
-+  UefiBootServicesTableLib
-+  MemoryAllocationLib
-+  BaseMemoryLib
-+  BaseLib
-+  UefiLib
-+  UefiDriverEntryPoint
-+  DebugLib
-+  PcdLib
-+  HobLib
-+
-+[Protocols]
-+  gEfiSmbiosProtocolGuid                      # PROTOCOL ALWAYS_PRODUCED
-+
-+[Guids]
-+  gEfiEventReadyToBootGuid                    # PROTOCOL ALWAYS_CONSUMED
-+  gEfiSmbiosTableGuid                         # PROTOCOL ALWAYS_CONSUMED
-+  gEfiXenInfoGuid
-+
-+[FixedPcd]
-+  gEfiMdeModulePkgTokenSpaceGuid.PcdSmbiosVersion
-+
-+[Depex]
-+  TRUE
-Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.c
-===================================================================
---- OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.c	(revision 0)
-+++ OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.c	(revision 0)
+--- OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.c	(revision 0)
++++ OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.c	(revision 0)
 @@ -0,0 +1,553 @@
 +/** @file
-+  Publish Xen hvmloader SMBIOS inside OVMF. This code parses Xen SMBIOS tables and add them into UEFI SMBIOS by calling EFI_SMBIOS_PROTOCOL=>Add.
++  Publish Xen hvmloader SMBIOS inside OVMF. This code parses Xen SMBIOS tables and add them into UEFI SMBIOS by calling SMBIOS protocol.
 +
 +  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
 +
@@ -2060,7 +1901,7 @@ Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.c
 +
 +**/
 +
-+#include "XenSmbiosDxe.h"
++#include "SmbiosPlatformDxe.h"
 +
 +//
 +// SMBIOS entry point structure
@@ -2083,7 +1924,7 @@ Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.c
 +
 +  //
 +  // BIOS info (TYPE 0)
-+  // 
++  //
 +  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 0, 0);
 +  if (SmbiosTable.Raw == NULL) {
 +    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 0 (BIOS Info) not found!\n"));
@@ -2270,6 +2111,7 @@ Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.c
 +    return ;
 +  }
 +
+
 +  //
 +  // Log Smbios Record Type17
 +  //
@@ -2374,7 +2216,6 @@ Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.c
 +  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
 +
 +**/
-
 +SMBIOS_TABLE_ENTRY_POINT *
 +XenSmbiosDetect (
 +  VOID
@@ -2599,10 +2440,10 @@ Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.c
 +
 +  return EFI_SUCCESS;
 +}
-Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.h
+Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.h
 ===================================================================
---- OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.h	(revision 0)
-+++ OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.h	(revision 0)
+--- OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.h	(revision 0)
++++ OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.h	(revision 0)
 @@ -0,0 +1,160 @@
 +/** @file
 +  This code passthroughs Xen hvmloader SMBIOS inside OVMF.
@@ -2764,6 +2605,165 @@ Index: OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.h
 +  );
 +
 +#endif
+Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
+===================================================================
+--- OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf	(revision 0)
++++ OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf	(revision 0)
+@@ -0,0 +1,64 @@
++## @file
++#  Component description file for Xen hvmloader Smbios module. 
++#  This driver initializes and installs the Xen hvmloader SMBIOS protocol.
++#
++#  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++#
++#  This program and the accompanying materials
++#  are licensed and made available under the terms and conditions of the BSD License
++#  which accompanies this distribution. The full text of the license may be found at
++#  http://opensource.org/licenses/bsd-license.php
++#  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++#  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++#
++#
++##
++
++[Defines]
++  INF_VERSION                    = 0x00010005
++  BASE_NAME                      = SmbiosPlatformDxe
++  FILE_GUID                      = 4110465d-5ff3-4f4b-b580-24ed0d06747a
++  MODULE_TYPE                    = DXE_DRIVER
++  VERSION_STRING                 = 1.0
++
++  ENTRY_POINT                    = SmbiosTablePublishEntry
++
++#
++# The following information is for reference only and not required by the build tools.
++#
++#  VALID_ARCHITECTURES           = IA32 X64 IPF EBC
++#
++
++[Sources]
++  SmbiosPlatformDxe.c
++  SmbiosPlatformDxe.h
++
++[Packages]
++  MdePkg/MdePkg.dec
++  MdeModulePkg/MdeModulePkg.dec
++  OvmfPkg/OvmfPkg.dec
++
++[LibraryClasses]
++  UefiBootServicesTableLib
++  MemoryAllocationLib
++  BaseMemoryLib
++  BaseLib
++  UefiLib
++  UefiDriverEntryPoint
++  DebugLib
++  PcdLib
++  HobLib
++
++[Protocols]
++  gEfiSmbiosProtocolGuid                      # PROTOCOL ALWAYS_PRODUCED
++
++[Guids]
++  gEfiEventReadyToBootGuid                    # PROTOCOL ALWAYS_CONSUMED
++  gEfiSmbiosTableGuid                         # PROTOCOL ALWAYS_CONSUMED
++  gEfiXenInfoGuid
++
++[FixedPcd]
++  gEfiMdeModulePkgTokenSpaceGuid.PcdSmbiosVersion
++
++[Depex]
++  TRUE
+Index: OvmfPkg/OvmfPkg.dec
+===================================================================
+--- OvmfPkg/OvmfPkg.dec	(revision 11711)
++++ OvmfPkg/OvmfPkg.dec	(working copy)
+@@ -33,6 +33,7 @@
+ 
+ [Guids]
+   gUefiOvmfPkgTokenSpaceGuid      = {0x93bb96af, 0xb9f2, 0x4eb8, {0x94, 0x62, 0xe0, 0xba, 0x74, 0x56, 0x42, 0x36}}
++  gEfiXenInfoGuid                 = {0xd3b46f3b, 0xd441, 0x1244, {0x9a, 0x12, 0x0, 0x12, 0x27, 0x3f, 0xc1, 0x4d}}
+ 
+ [Protocols]
+   gBlockMmioProtocolGuid          = {0x6b558ce3, 0x69e5, 0x4c67, {0xa6, 0x34, 0xf7, 0xfe, 0x72, 0xad, 0xbe, 0x84}}
+Index: OvmfPkg/Library/AcpiTimerLib/AcpiTimerLib.c
+===================================================================
+--- OvmfPkg/Library/AcpiTimerLib/AcpiTimerLib.c	(revision 11711)
++++ OvmfPkg/Library/AcpiTimerLib/AcpiTimerLib.c	(working copy)
+@@ -1,25 +1,36 @@
+ /** @file
+   ACPI Timer implements one instance of Timer Library.
+ 
++  Modified to support Xen HVM - Andrei Warkentin <andreiw@motorola.com>
++
+   Copyright (c) 2008, Intel Corporation. All rights reserved.<BR>
+   This program and the accompanying materials are
+   licensed and made available under the terms and conditions of the BSD License
+   which accompanies this distribution.  The full text of the license may be found at
+   http://opensource.org/licenses/bsd-license.php
+-  
++
+   THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
+   WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
+ 
+-**/ 
++**/
+ 
+ #include <Base.h>
+ #include <Library/TimerLib.h>
+ #include <Library/BaseLib.h>
+ #include <Library/IoLib.h>
+ #include <Library/PciLib.h>
++#include <Library/DebugLib.h>
+ 
++//
++// PIIX4 usual base BAR.
++//
++
++UINT32 TimerBaseBar = 0x401;
++
++#define PCI_BAR_IO             0x1
+ #define ACPI_TIMER_FREQUENCY   3579545
+ #define ACPI_TIMER_COUNT_SIZE  0x01000000
++#define ACPI_TIMER_OFFSET      0x8
+ 
+ /**
+   The constructor function enables ACPI IO space.
+@@ -41,12 +52,22 @@
+   Device = 1;
+   // Device = 7;
+ 
++  if (PciRead8 (PCI_LIB_ADDRESS (0,Device,3,0x80)) & 1) {
++    TimerBaseBar = PciRead32 (PCI_LIB_ADDRESS (0,Device,3,0x40));
++    ASSERT(TimerBaseBar & PCI_BAR_IO);
++    TimerBaseBar &= ~PCI_BAR_IO;
++  } else {
++    PciAndThenOr32 (PCI_LIB_ADDRESS (0,Device,3,0x40),
++                    (UINT32) ~0xfc0, TimerBaseBar);
++    PciOr8         (PCI_LIB_ADDRESS (0,Device,3,0x04), 0x01);
++  }
++
+   //
+   // ACPI Timer enable is in Bus 0, Device ?, Function 3
+   //
+-  PciOr8         (PCI_LIB_ADDRESS (0,Device,3,0x04), 0x01);
+-  PciAndThenOr32 (PCI_LIB_ADDRESS (0,Device,3,0x40), (UINT32) ~0xfc0, 0x400);
+-  PciOr8         (PCI_LIB_ADDRESS (0,Device,3,0x80), 0x01);  return RETURN_SUCCESS;
++
++  PciOr8         (PCI_LIB_ADDRESS (0,Device,3,0x80), 0x01);
++  return RETURN_SUCCESS;
+ }
+ 
+ /**
+@@ -63,7 +84,7 @@
+   VOID
+   )
+ {
+-  return IoRead32 (0x408);
++  return IoRead32 (TimerBaseBar + ACPI_TIMER_OFFSET);
+ }
+ 
+ /**
 Index: OvmfPkg/OvmfPkgX64.fdf
 ===================================================================
 --- OvmfPkg/OvmfPkgX64.fdf	(revision 11711)
@@ -2772,7 +2772,7 @@ Index: OvmfPkg/OvmfPkgX64.fdf
  INF  MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
  INF  MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
  INF  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
-+INF  OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.inf
++INF  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
  INF  PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
  INF  UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
  INF  UefiCpuPkg/CpuDxe/CpuDxe.inf
