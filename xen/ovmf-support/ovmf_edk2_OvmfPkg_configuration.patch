@@ -6,7 +6,7 @@ Index: OvmfPkg/OvmfPkgX64.dsc
    MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
    MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
    MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
-+  OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.inf
++  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
    PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
    UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
    UefiCpuPkg/CpuDxe/CpuDxe.inf
@@ -27,7 +27,7 @@ Index: OvmfPkg/OvmfPkgIa32.fdf
  INF  MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
  INF  MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
  INF  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
-+INF  OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.inf
++INF  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
  INF  PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
  INF  UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
  INF  UefiCpuPkg/CpuDxe/CpuDxe.inf
@@ -48,7 +48,7 @@ Index: OvmfPkg/OvmfPkgIa32.dsc
    MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
    MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
    MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
-+  OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.inf
++  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
    PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
    UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
    UefiCpuPkg/CpuDxe/CpuDxe.inf
@@ -69,7 +69,7 @@ Index: OvmfPkg/OvmfPkgX64.fdf
  INF  MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
  INF  MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
  INF  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
-+INF  OvmfPkg/XenSmbiosDxe/XenSmbiosDxe.inf
++INF  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
  INF  PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
  INF  UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
  INF  UefiCpuPkg/CpuDxe/CpuDxe.inf
