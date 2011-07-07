@@ -3,7 +3,9 @@ patch:
 ovmf_edk2_OvmfPkg_AcpiPlatformDxe.patch
 ovmf_edk2_OvmfPkg_SmbiosPlatformDxe.patch
 ovmf_edk2_OvmfPkg_configuration.patch
-ovmf_xen_smbios_acpi_publish.patch
+ovmf-xend-unstable-4.2.patch
+ovmf-xl-unstable-4.2.patch
+ovmf-firmware-unstable-4.2.patch
 
 (PS: All the ovmf_edk2_* patches are included in one: ovmf_edk2_OvmfPkg_final.patch)
 
@@ -13,6 +15,7 @@ ovmf_binary_for_xen\ovmf-ia32.bin
 ovmf_binary_for_xen\ovmf-ia32-cirrus-vga.bin
 ovmf_binary_for_xen\ovmf-x64.bin
 ovmf_binary_for_xen\ovmf-x64-cirrus-vga.bin
+
 
 Xen ACPI Tables published inside UEFI
 -----
@@ -24,3 +27,10 @@ Xen SMBIOS published inside UEFI
 -----
 1) The patches publish Xen SMBIOS inside UEFI. Support both QEMU and Xen.
 2) OvmfPkg/SmbiosPlatformDxe can detect the Xen environment and Xen hvmloader SMBIOS. After that, it parses Xen BIOS structure and calls EFI_SMBIOS_PROTOCOL=>Add to add them to UEFI system.
+
+Patches ovmf-*-unstable-4.2.patch and binary file are prepared for Xen-unstale-4.2
+-----
+1) ovmf-xend-unstable-4.2.patch makes xend start the UEFI bios.
+2) ovmf-xl-unstable-4.2.patch makes libxl start UEFI bios.
+3) ovmf-firmware-unstable-4.2.patch supports UEFI bios on Xen HVM.
+
