@@ -3,9 +3,8 @@ patch:
 ovmf_edk2_OvmfPkg_AcpiPlatformDxe.patch
 ovmf_edk2_OvmfPkg_SmbiosPlatformDxe.patch
 ovmf_edk2_OvmfPkg_configuration.patch
-ovmf-xend-unstable-4.2.patch
-ovmf-xl-unstable-4.2.patch
-ovmf-firmware-unstable-4.2.patch
+ovmf-xen-unstable.patch
+ovmf-firmware.patch
 
 (PS: All the ovmf_edk2_* patches are included in one: ovmf_edk2_OvmfPkg_final.patch)
 
