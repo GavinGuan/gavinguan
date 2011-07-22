@@ -1,0 +1,148 @@
+# HG changeset patch
+# User gbtju85@gmail.com
+#
+
+Xen: Expose hvmloader/bios in libxl and xend.
+
+Exposes the hvmloader/bios xenstore key in libxl and xend,
+so firmware loaded can be overriden (choices: rombios, seabios
+ovmf-ia32, ovmf-x64).
+
+Sign-off-by: Bei Guan <gbtju85@gmail.com>
+
+diff -r e298ce67777e tools/libxl/libxl.idl
+--- a/tools/libxl/libxl.idl	Mon Jul 18 14:38:31 2011 +0100
++++ b/tools/libxl/libxl.idl	Fri Jul 22 23:00:20 2011 +0800
+@@ -137,6 +137,7 @@
+                                              
+ libxl_domain_create_info = Struct("domain_create_info",[
+     ("hvm",          bool),
++    ("hvmbios",      string),
+     ("hap",          bool),
+     ("oos",          bool),
+     ("ssidref",      uint32),
+diff -r e298ce67777e tools/libxl/libxl_create.c
+--- a/tools/libxl/libxl_create.c	Mon Jul 18 14:38:31 2011 +0100
++++ b/tools/libxl/libxl_create.c	Fri Jul 22 23:00:20 2011 +0800
+@@ -377,6 +377,10 @@
+     if (info->poolname)
+         xs_write(ctx->xsh, t, libxl__sprintf(gc, "%s/pool_name", vm_path), info->poolname, strlen(info->poolname));
+ 
++    if (info->hvmbios){
++        xs_write(ctx->xsh, t, libxl__sprintf(gc, "%s/hvmloader/bios", dom_path), info->hvmbios, strlen(info->hvmbios));
++    }
++
+     libxl__xs_writev(gc, t, dom_path, info->xsdata);
+     libxl__xs_writev(gc, t, libxl__sprintf(gc, "%s/platform", dom_path), info->platformdata);
+ 
+diff -r e298ce67777e tools/libxl/libxl_dm.c
+--- a/tools/libxl/libxl_dm.c	Mon Jul 18 14:38:31 2011 +0100
++++ b/tools/libxl/libxl_dm.c	Fri Jul 22 23:00:20 2011 +0800
+@@ -783,6 +783,7 @@
+     char *vm_path;
+     char **pass_stuff;
+     const char *dm;
++    char *custom_bios;
+ 
+     if (info->device_model_stubdomain) {
+         libxl_device_vfb vfb;
+@@ -814,10 +815,13 @@
+         goto out;
+     }
+ 
+-    path = libxl__sprintf(gc, "/local/domain/%d/hvmloader", info->domid);
+-    xs_mkdir(ctx->xsh, XBT_NULL, path);
+-    libxl__xs_write(gc, XBT_NULL, libxl__sprintf(gc, "%s/bios", path),
+-                    "%s", libxl__domain_bios(gc, info));
++    custom_bios = libxl__xs_read(gc, XBT_NULL, libxl__sprintf(gc, "/local/domain/%d/hvmloader/bios", info->domid));
++    if (!custom_bios) {
++        path = libxl__sprintf(gc, "/local/domain/%d/hvmloader", info->domid);
++        xs_mkdir(ctx->xsh, XBT_NULL, path);
++        libxl__xs_write(gc, XBT_NULL, libxl__sprintf(gc, "%s/bios", path),
++                        "%s", libxl__domain_bios(gc, info));
++    }
+ 
+     path = libxl__sprintf(gc, "/local/domain/0/device-model/%d", info->domid);
+     xs_mkdir(ctx->xsh, XBT_NULL, path);
+diff -r e298ce67777e tools/libxl/xl_cmdimpl.c
+--- a/tools/libxl/xl_cmdimpl.c	Mon Jul 18 14:38:31 2011 +0100
++++ b/tools/libxl/xl_cmdimpl.c	Fri Jul 22 23:00:20 2011 +0800
+@@ -553,6 +553,10 @@
+         }
+     }
+ 
++    if (!xlu_cfg_get_string (config, "hvmbios", &buf)){
++        c_info->hvmbios = strdup(buf);
++    }
++
+     c_info->hvm = 0;
+     if (!xlu_cfg_get_string (config, "builder", &buf) &&
+         !strncmp(buf, "hvm", strlen(buf)))
+diff -r e298ce67777e tools/python/xen/xend/XendConfig.py
+--- a/tools/python/xen/xend/XendConfig.py	Mon Jul 18 14:38:31 2011 +0100
++++ b/tools/python/xen/xend/XendConfig.py	Fri Jul 22 23:00:20 2011 +0800
+@@ -153,6 +153,7 @@
+     'fdb': str,
+     'keymap': str,
+     'isa' : int,
++    'hvmbios' : str,
+     'localtime': int,
+     'monitor': int,
+     'monitor_path': str,
+diff -r e298ce67777e tools/python/xen/xend/XendDomainInfo.py
+--- a/tools/python/xen/xend/XendDomainInfo.py	Mon Jul 18 14:38:31 2011 +0100
++++ b/tools/python/xen/xend/XendDomainInfo.py	Fri Jul 22 23:00:20 2011 +0800
+@@ -1789,6 +1789,10 @@
+         if self.info.has_key('security_label'):
+             f('security_label', self.info['security_label'])
+ 
++        hvm = self.info.is_hvm()
++        if hvm and self.info["platform"].get("hvmbios") is not None:
++            f('hvmloader/bios', self.info["platform"].get("hvmbios"))
++
+         to_store.update(self._vcpuDomDetails())
+ 
+         log.debug("Storing domain details: %s", scrub_password(to_store))
+diff -r e298ce67777e tools/python/xen/xm/create.py
+--- a/tools/python/xen/xm/create.py	Mon Jul 18 14:38:31 2011 +0100
++++ b/tools/python/xen/xm/create.py	Fri Jul 22 23:00:20 2011 +0800
+@@ -168,6 +168,10 @@
+           fn=set_value, default=None,
+           use="Path to kernel image.")
+ 
++gopts.var('hvmbios', val='HVMBIOS',
++          fn=set_value, default=None,
++          use="Type of firmware to load in HVM mode")
++
+ gopts.var('ramdisk', val='FILE',
+           fn=set_value, default='',
+           use="Path to ramdisk.")
+@@ -1084,7 +1088,7 @@
+              'device_model', 'display',
+              'fda', 'fdb',
+              'gfx_passthru', 'guest_os_type',
+-             'hap', 'hpet',
++             'hap', 'hpet', 'hvmbios',
+              'isa',
+              'keymap',
+              'localtime',
+@@ -1143,7 +1147,7 @@
+                    'on_reboot', 'on_crash', 'features', 'on_xend_start',
+                    'on_xend_stop', 'target', 'cpuid', 'cpuid_check',
+                    'machine_address_size', 'suppress_spurious_page_faults',
+-                   'description'])
++                   'description' ])
+ 
+     vcpu_conf()
+     if vals.uuid is not None:
+diff -r e298ce67777e tools/python/xen/xm/xenapi_create.py
+--- a/tools/python/xen/xm/xenapi_create.py	Mon Jul 18 14:38:31 2011 +0100
++++ b/tools/python/xen/xm/xenapi_create.py	Fri Jul 22 23:00:20 2011 +0800
+@@ -1090,6 +1090,7 @@
+             'fda',
+             'fdb',
+             'keymap',
++            'hvmbios',
+             'isa',
+             'localtime',
+             'monitor',

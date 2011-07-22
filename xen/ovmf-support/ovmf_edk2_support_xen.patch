@@ -1,6 +1,6 @@
 Index: OvmfPkg/PlatformPei/Platform.c
 ===================================================================
---- OvmfPkg/PlatformPei/Platform.c	(revision 11711)
+--- OvmfPkg/PlatformPei/Platform.c	(revision 12048)
 +++ OvmfPkg/PlatformPei/Platform.c	(working copy)
 @@ -1,6 +1,8 @@
  /**@file
@@ -26,10 +26,11 @@ Index: OvmfPkg/PlatformPei/Platform.c
  EFI_MEMORY_TYPE_INFORMATION mDefaultMemoryTypeInformation[] = {
    { EfiACPIMemoryNVS,       0x004 },
    { EfiACPIReclaimMemory,   0x008 },
-@@ -75,6 +80,24 @@
+@@ -73,6 +78,22 @@
+     );
+ }
  
- 
- VOID
++VOID
 +AddReservedMemoryBaseSizeHob (
 +  EFI_PHYSICAL_ADDRESS        MemoryBase,
 +  UINT64                      MemorySize
@@ -45,13 +46,10 @@ Index: OvmfPkg/PlatformPei/Platform.c
 +    MemorySize
 +    );
 +}
-+
-+
-+VOID
+ 
+ VOID
  AddIoMemoryRangeHob (
-   EFI_PHYSICAL_ADDRESS        MemoryBase,
-   EFI_PHYSICAL_ADDRESS        MemoryLimit
-@@ -147,7 +170,8 @@
+@@ -147,7 +168,8 @@
  
  VOID
  MemMapInitialization (
@@ -61,13 +59,12 @@ Index: OvmfPkg/PlatformPei/Platform.c
    )
  {
    //
-@@ -162,24 +186,46 @@
+@@ -162,24 +184,44 @@
    //
    // Add PCI IO Port space available for PCI resource allocations.
    //
 -  BuildResourceDescriptorHob (
 -    EFI_RESOURCE_IO,
-+
 +  if (XenHvm) {
 +    BuildResourceDescriptorHob (
 +      EFI_RESOURCE_IO,
@@ -94,7 +91,6 @@ Index: OvmfPkg/PlatformPei/Platform.c
    //
 -  if (TopOfMemory < BASE_2GB) {
 -    AddIoMemoryBaseSizeHob (BASE_2GB, 0xFEC00000 - BASE_2GB);
-+
 +  if (XenHvm) {
 +    AddIoMemoryBaseSizeHob (TopOfMemory, 0xFC000000 - TopOfMemory);
    } else {
@@ -116,7 +112,7 @@ Index: OvmfPkg/PlatformPei/Platform.c
    // Local APIC range
    //
    AddIoMemoryBaseSizeHob (0xFEC80000, SIZE_512KB);
-@@ -209,11 +255,6 @@
+@@ -209,11 +251,6 @@
    // Build the CPU hob with 36-bit addressing and 16-bits of IO space.
    //
    BuildCpuHob (36, 16);
@@ -128,15 +124,15 @@ Index: OvmfPkg/PlatformPei/Platform.c
  }
  
  
-@@ -277,8 +318,87 @@
+@@ -277,8 +314,84 @@
    }
  }
  
 +/**
 +  Connects to the Hypervisor.
- 
++ 
 +  @param  XenLeaf     CPUID index used to connect.
-+
+ 
 +  @return EFI_STATUS
 +
 +**/
@@ -207,16 +203,13 @@ Index: OvmfPkg/PlatformPei/Platform.c
 +  }
 +
 +  return 0;
-+
-+
-+  return TRUE;
 +}
 +
 +/**
    Perform Platform PEI initialization.
  
    @param  FileHandle      Handle of the file being invoked.
-@@ -295,18 +415,25 @@
+@@ -295,18 +408,25 @@
    )
  {
    EFI_PHYSICAL_ADDRESS  TopOfMemory;
@@ -245,7 +238,7 @@ Index: OvmfPkg/PlatformPei/Platform.c
  
 Index: OvmfPkg/PlatformPei/PlatformPei.inf
 ===================================================================
---- OvmfPkg/PlatformPei/PlatformPei.inf	(revision 11711)
+--- OvmfPkg/PlatformPei/PlatformPei.inf	(revision 12048)
 +++ OvmfPkg/PlatformPei/PlatformPei.inf	(working copy)
 @@ -41,6 +41,7 @@
  
@@ -1818,11 +1811,58 @@ Index: OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf
 +[Depex]
 +  gEfiAcpiTableProtocolGuid
 +
+Index: OvmfPkg/Include/Guid/XenInfo.h
+===================================================================
+--- OvmfPkg/Include/Guid/XenInfo.h	(revision 0)
++++ OvmfPkg/Include/Guid/XenInfo.h	(revision 0)
+@@ -0,0 +1,42 @@
++/** @file
++  XenInfo HOB passed by PEI into DXE.
++
++Copyright (c) 2011, Andrei Warkentin <andreiw@motorola.com>
++This program and the accompanying materials are licensed and made available under
++the terms and conditions of the BSD License that accompanies this distribution.
++The full text of the license may be found at
++http://opensource.org/licenses/bsd-license.php.
++
++THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#ifndef __XEN_INFO_H__
++#define __XEN_INFO_H__
++
++#define EFI_XEN_INFO_GUID \
++    { 0xd3b46f3b, 0xd441, 0x1244, {0x9a, 0x12, 0x0, 0x12, 0x27, 0x3f, 0xc1, 0x4d } }
++
++typedef struct {
++  ///
++  /// Beginning of the hypercall page.
++  ///
++  VOID *HyperPages;
++  ///
++  /// Location of the hvm_info page.
++  ///
++  VOID *HvmInfo;
++  ///
++  /// Hypervisor major version.
++  ///
++  UINT16 VersionMajor;
++  ///
++  /// Hypervisor minor version.
++  ///
++  UINT16 VersionMinor;
++} EFI_XEN_INFO;
++
++extern EFI_GUID gEfiXenInfoGuid;
++
++#endif
 Index: OvmfPkg/OvmfPkgX64.dsc
 ===================================================================
---- OvmfPkg/OvmfPkgX64.dsc	(revision 11711)
+--- OvmfPkg/OvmfPkgX64.dsc	(revision 12048)
 +++ OvmfPkg/OvmfPkgX64.dsc	(working copy)
-@@ -295,6 +295,7 @@
+@@ -303,6 +303,7 @@
    MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
    MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
    MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
@@ -1830,7 +1870,7 @@ Index: OvmfPkg/OvmfPkgX64.dsc
    PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
    UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
    UefiCpuPkg/CpuDxe/CpuDxe.inf
-@@ -362,7 +363,7 @@
+@@ -370,7 +371,7 @@
    # ACPI Support
    #
    MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
@@ -1841,7 +1881,7 @@ Index: OvmfPkg/OvmfPkgX64.dsc
    #
 Index: OvmfPkg/OvmfPkgIa32.fdf
 ===================================================================
---- OvmfPkg/OvmfPkgIa32.fdf	(revision 11711)
+--- OvmfPkg/OvmfPkgIa32.fdf	(revision 12048)
 +++ OvmfPkg/OvmfPkgIa32.fdf	(working copy)
 @@ -153,6 +153,7 @@
  INF  MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
@@ -1862,9 +1902,9 @@ Index: OvmfPkg/OvmfPkgIa32.fdf
  INF  RuleOverride = BINARY FatBinPkg/EnhancedFatDxe/Fat.inf
 Index: OvmfPkg/OvmfPkgIa32.dsc
 ===================================================================
---- OvmfPkg/OvmfPkgIa32.dsc	(revision 11711)
+--- OvmfPkg/OvmfPkgIa32.dsc	(revision 12048)
 +++ OvmfPkg/OvmfPkgIa32.dsc	(working copy)
-@@ -295,6 +295,7 @@
+@@ -303,6 +303,7 @@
    MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
    MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
    MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
@@ -1872,7 +1912,7 @@ Index: OvmfPkg/OvmfPkgIa32.dsc
    PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
    UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
    UefiCpuPkg/CpuDxe/CpuDxe.inf
-@@ -362,7 +363,7 @@
+@@ -370,7 +371,7 @@
    # ACPI Support
    #
    MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
@@ -2111,7 +2151,6 @@ Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.c
 +    return ;
 +  }
 +
-
 +  //
 +  // Log Smbios Record Type17
 +  //
@@ -2406,6 +2445,7 @@ Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.c
 +  //
 +  GuidHob = GetFirstGuidHob (&gEfiXenInfoGuid);
 +  if (GuidHob != NULL) {
+
 +    //
 +    // We are running inside Xen HVM. Then, find the Xen SMBIOS.
 +    //
@@ -2676,7 +2716,7 @@ Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
 +  TRUE
 Index: OvmfPkg/OvmfPkg.dec
 ===================================================================
---- OvmfPkg/OvmfPkg.dec	(revision 11711)
+--- OvmfPkg/OvmfPkg.dec	(revision 12048)
 +++ OvmfPkg/OvmfPkg.dec	(working copy)
 @@ -33,6 +33,7 @@
  
@@ -2688,9 +2728,9 @@ Index: OvmfPkg/OvmfPkg.dec
    gBlockMmioProtocolGuid          = {0x6b558ce3, 0x69e5, 0x4c67, {0xa6, 0x34, 0xf7, 0xfe, 0x72, 0xad, 0xbe, 0x84}}
 Index: OvmfPkg/Library/AcpiTimerLib/AcpiTimerLib.c
 ===================================================================
---- OvmfPkg/Library/AcpiTimerLib/AcpiTimerLib.c	(revision 11711)
+--- OvmfPkg/Library/AcpiTimerLib/AcpiTimerLib.c	(revision 12048)
 +++ OvmfPkg/Library/AcpiTimerLib/AcpiTimerLib.c	(working copy)
-@@ -1,25 +1,36 @@
+@@ -1,6 +1,8 @@
  /** @file
    ACPI Timer implements one instance of Timer Library.
  
@@ -2699,18 +2739,7 @@ Index: OvmfPkg/Library/AcpiTimerLib/AcpiTimerLib.c
    Copyright (c) 2008, Intel Corporation. All rights reserved.<BR>
    This program and the accompanying materials are
    licensed and made available under the terms and conditions of the BSD License
-   which accompanies this distribution.  The full text of the license may be found at
-   http://opensource.org/licenses/bsd-license.php
--  
-+
-   THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
-   WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
- 
--**/ 
-+**/
- 
- #include <Base.h>
- #include <Library/TimerLib.h>
+@@ -17,9 +19,18 @@
  #include <Library/BaseLib.h>
  #include <Library/IoLib.h>
  #include <Library/PciLib.h>
@@ -2729,7 +2758,7 @@ Index: OvmfPkg/Library/AcpiTimerLib/AcpiTimerLib.c
  
  /**
    The constructor function enables ACPI IO space.
-@@ -41,12 +52,22 @@
+@@ -41,12 +52,21 @@
    Device = 1;
    // Device = 7;
  
@@ -2749,13 +2778,12 @@ Index: OvmfPkg/Library/AcpiTimerLib/AcpiTimerLib.c
 -  PciOr8         (PCI_LIB_ADDRESS (0,Device,3,0x04), 0x01);
 -  PciAndThenOr32 (PCI_LIB_ADDRESS (0,Device,3,0x40), (UINT32) ~0xfc0, 0x400);
 -  PciOr8         (PCI_LIB_ADDRESS (0,Device,3,0x80), 0x01);  return RETURN_SUCCESS;
-+
 +  PciOr8         (PCI_LIB_ADDRESS (0,Device,3,0x80), 0x01);
 +  return RETURN_SUCCESS;
  }
  
  /**
-@@ -63,7 +84,7 @@
+@@ -63,7 +83,7 @@
    VOID
    )
  {
@@ -2766,7 +2794,7 @@ Index: OvmfPkg/Library/AcpiTimerLib/AcpiTimerLib.c
  /**
 Index: OvmfPkg/OvmfPkgX64.fdf
 ===================================================================
---- OvmfPkg/OvmfPkgX64.fdf	(revision 11711)
+--- OvmfPkg/OvmfPkgX64.fdf	(revision 12048)
 +++ OvmfPkg/OvmfPkgX64.fdf	(working copy)
 @@ -153,6 +153,7 @@
  INF  MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
