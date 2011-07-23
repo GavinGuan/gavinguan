@@ -1,0 +1,96 @@
+Index: OvmfPkg/OvmfPkg.dec
+===================================================================
+--- OvmfPkg/OvmfPkg.dec	(revision 12048)
++++ OvmfPkg/OvmfPkg.dec	(working copy)
+@@ -33,6 +33,7 @@
+ 
+ [Guids]
+   gUefiOvmfPkgTokenSpaceGuid      = {0x93bb96af, 0xb9f2, 0x4eb8, {0x94, 0x62, 0xe0, 0xba, 0x74, 0x56, 0x42, 0x36}}
++  gEfiXenInfoGuid                 = {0xd3b46f3b, 0xd441, 0x1244, {0x9a, 0x12, 0x0, 0x12, 0x27, 0x3f, 0xc1, 0x4d}}
+ 
+ [Protocols]
+   gBlockMmioProtocolGuid          = {0x6b558ce3, 0x69e5, 0x4c67, {0xa6, 0x34, 0xf7, 0xfe, 0x72, 0xad, 0xbe, 0x84}}
+Index: OvmfPkg/OvmfPkgIa32.dsc
+===================================================================
+--- OvmfPkg/OvmfPkgIa32.dsc	(revision 12048)
++++ OvmfPkg/OvmfPkgIa32.dsc	(working copy)
+@@ -303,6 +303,7 @@
+   MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
+   MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
+   MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
++  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
+   PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
+   UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
+   UefiCpuPkg/CpuDxe/CpuDxe.inf
+@@ -370,7 +371,7 @@
+   # ACPI Support
+   #
+   MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
+-  MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
++  OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf
+   OvmfPkg/AcpiTables/AcpiTables.inf
+ 
+   #
+Index: OvmfPkg/OvmfPkgIa32.fdf
+===================================================================
+--- OvmfPkg/OvmfPkgIa32.fdf	(revision 12048)
++++ OvmfPkg/OvmfPkgIa32.fdf	(working copy)
+@@ -153,6 +153,7 @@
+ INF  MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
+ INF  MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
+ INF  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
++INF  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
+ INF  PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
+ INF  UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
+ INF  UefiCpuPkg/CpuDxe/CpuDxe.inf
+@@ -199,7 +200,7 @@
+ INF  IntelFrameworkModulePkg/Bus/Isa/IsaFloppyDxe/IsaFloppyDxe.inf
+ 
+ INF  MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
+-INF  MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
++INF  OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf
+ INF  RuleOverride=ACPITABLE OvmfPkg/AcpiTables/AcpiTables.inf
+ 
+ INF  RuleOverride = BINARY FatBinPkg/EnhancedFatDxe/Fat.inf
+Index: OvmfPkg/OvmfPkgX64.dsc
+===================================================================
+--- OvmfPkg/OvmfPkgX64.dsc	(revision 12048)
++++ OvmfPkg/OvmfPkgX64.dsc	(working copy)
+@@ -303,6 +303,7 @@
+   MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
+   MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
+   MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
++  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
+   PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
+   UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
+   UefiCpuPkg/CpuDxe/CpuDxe.inf
+@@ -370,7 +371,7 @@
+   # ACPI Support
+   #
+   MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
+-  MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
++  OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf
+   OvmfPkg/AcpiTables/AcpiTables.inf
+ 
+   #
+Index: OvmfPkg/OvmfPkgX64.fdf
+===================================================================
+--- OvmfPkg/OvmfPkgX64.fdf	(revision 12048)
++++ OvmfPkg/OvmfPkgX64.fdf	(working copy)
+@@ -153,6 +153,7 @@
+ INF  MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
+ INF  MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
+ INF  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
++INF  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
+ INF  PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
+ INF  UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
+ INF  UefiCpuPkg/CpuDxe/CpuDxe.inf
+@@ -199,7 +200,7 @@
+ INF  IntelFrameworkModulePkg/Bus/Isa/IsaFloppyDxe/IsaFloppyDxe.inf
+ 
+ INF  MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
+-INF  MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
++INF  OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf
+ INF  RuleOverride=ACPITABLE OvmfPkg/AcpiTables/AcpiTables.inf
+ 
+ INF  RuleOverride = BINARY FatBinPkg/EnhancedFatDxe/Fat.inf

@@ -6,6 +6,7 @@ The names of the patches are listed here:
 3_ovmf_edk2_PlatformPei.patch
 4_ovmf_edk2_SmbiosPlatformDxe.patch
 5_ovmf_edk2_AcpiPlatformDxe.patch
+2_4_5_ovmf_edk2_config_files.patch
 
 * The first three patches make OVMF loaded by Xen hvmloader and running.
 * SmbiosPlatformDxe publishes Xen hvmloader Smbios inside OVMF.

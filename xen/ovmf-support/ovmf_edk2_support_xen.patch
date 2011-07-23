@@ -252,7 +252,7 @@ Index: OvmfPkg/AcpiPlatformDxe/AcpiPlatform.c
 ===================================================================
 --- OvmfPkg/AcpiPlatformDxe/AcpiPlatform.c	(revision 0)
 +++ OvmfPkg/AcpiPlatformDxe/AcpiPlatform.c	(revision 0)
-@@ -0,0 +1,1337 @@
+@@ -0,0 +1,998 @@
 +/** @file
 +  ACPI Platform Driver. If OVMF runs in Xen, find Xen ACPI Tables and publish them.
 +  Support both Xen and QEMU.
@@ -271,48 +271,11 @@ Index: OvmfPkg/AcpiPlatformDxe/AcpiPlatform.c
 +
 +#include "AcpiPlatform.h"
 +
++UINTN mEfiAcpiMaxNumTables = EFI_ACPI_MAX_NUM_TABLES;
++
 +XEN_ACPI_TABLE_POINTER                  *XenAcpiTablePointerStructure = NULL;
 +EFI_XEN_ACPI_TABLE_INSTANCE             *AcpiTableInstance = NULL;
 +
-+/**
-+  This function checks an UINT8 checksum.
-+
-+  @param  Buffer          Pointer to buffer to checksum
-+  @param  Size            Number of bytes to checksum
-+
-+  @return EFI_SUCCESS     The function completed successfully.
-+
-+**/
-+EFI_STATUS
-+VerifyAcpiPlatformChecksum (
-+  IN VOID       *Buffer,
-+  IN UINTN      Size
-+  )
-+{
-+  UINT8 Sum;
-+  UINT8 *Ptr;
-+
-+  Sum = 0;
-+  //
-+  // Initialize pointer
-+  //
-+  Ptr = Buffer;
-+
-+  //
-+  // Add all content of buffer
-+  //
-+  while ((Size--) != 0) {
-+    Sum = (UINT8) (Sum + (*Ptr++));
-+  }
-+  //
-+  // Check checksum
-+  //
-+  if (Sum != 0){
-+    return EFI_CRC_ERROR;
-+  }
-+
-+  return EFI_SUCCESS;
-+}
 +
 +/**
 +  This function calculates and updates an UINT8 checksum.
@@ -436,259 +399,6 @@ Index: OvmfPkg/AcpiPlatformDxe/AcpiPlatform.c
 +    OFFSET_OF (EFI_ACPI_DESCRIPTION_HEADER,
 +    Checksum)
 +    );
-+
-+  return EFI_SUCCESS;
-+}
-+
-+/**
-+  Initialize the XenAcpiTablePointer Structure
-+
-+  @return EFI_SUCCESS             The function completed successfully.
-+
-+**/
-+EFI_STATUS
-+EFIAPI
-+InitializeXenAcpiTablePointer (
-+  VOID
-+  )
-+{
-+  XenAcpiTablePointerStructure->XenRsdp1Ptr = NULL;
-+  XenAcpiTablePointerStructure->XenRsdp2Ptr = NULL;  // Xen RSDP 2.0
-+  XenAcpiTablePointerStructure->XenRsdt1Ptr = NULL;
-+  XenAcpiTablePointerStructure->XenRsdt2Ptr = NULL;  // Xen RSDT 2.0
-+  XenAcpiTablePointerStructure->XenXsdtPtr  = NULL;  // Xen XSDT 2.0
-+  XenAcpiTablePointerStructure->XenFadt1Ptr = NULL;  // Xen FADT 1.0
-+  XenAcpiTablePointerStructure->XenFadt2Ptr = NULL;  // Xen FADT 2.0
-+  XenAcpiTablePointerStructure->XenFacs1Ptr = NULL;
-+  XenAcpiTablePointerStructure->XenFacs2Ptr = NULL;  // Xen FACS 2.0
-+  XenAcpiTablePointerStructure->XenDsdt1Ptr = NULL;
-+  XenAcpiTablePointerStructure->XenDsdt2Ptr = NULL;  // Xen DSDT
-+
-+  XenAcpiTablePointerStructure->XenNumberOfTableEntries1 = 0;
-+  XenAcpiTablePointerStructure->XenNumberOfTableEntries2 = 0;
-+
-+  return EFI_SUCCESS;
-+}
-+
-+/**
-+  Figures out if Xen hvmloader provides ACPI Table for HVM. If it provides, get the pointers of each table
-+
-+  @return EFI_SUCCESS             The function completed successfully.
-+
-+**/
-+EFI_STATUS
-+EFIAPI
-+DetectXenAcpiTable (
-+  VOID
-+  )
-+{
-+  UINTN                                        XenAcpiPtr;
-+
-+  EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER *Rsdp2Structure;
-+  EFI_ACPI_2_0_RSDT                            *Rsdt2Structure; //Ptr to RSDT2 header
-+  EFI_ACPI_2_0_XSDT                            *XsdtStructure;  //Ptr to XSDT2 header
-+  EFI_ACPI_2_0_FIXED_ACPI_DESCRIPTION_TABLE    *Fadt2Structure; //Ptr to FADT header
-+  EFI_ACPI_DESCRIPTION_HEADER                  *AcpiTableHeader; //Ptr to DSDT header
-+
-+  EFI_ACPI_TABLE_VERSION                       Version;
-+  EFI_STATUS                                   Status;
-+  EFI_XEN_ACPI_SSDT_2_0_TABLE_LIST             *CurrentTableList;
-+  UINT64                                       Buffer64;
-+  UINTN                                        Index;
-+  UINT8                                        Length;
-+
-+  //
-+  // Initialize the XEN_ACPI_TABLE_POINTER
-+  //
-+  InitializeXenAcpiTablePointer();
-+  InitializeListHead (&XenAcpiTablePointerStructure->XenSsdtTableList);
-+
-+  //
-+  // Detect the RSDP table
-+  //
-+  for (XenAcpiPtr = XEN_ACPI_PHYSICAL_ADDRESS; XenAcpiPtr < XEN_BIOS_PHYSICAL_END; XenAcpiPtr += 0x10) {
-+
-+    Rsdp2Structure = (EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER *) (UINTN) XenAcpiPtr;
-+
-+    if (!AsciiStrnCmp ((CHAR8 *) &Rsdp2Structure->Signature, "RSD PTR ", 8)) {
-+      //
-+      // Detect the Acpi Version
-+      //
-+      Version = Rsdp2Structure->Revision;
-+
-+      //
-+      // RSDP ACPI 1.0 checksum for 2.0/3.0 table.  This is only the first 20 bytes of the structure
-+      //
-+      Status = VerifyAcpiPlatformChecksum (
-+        Rsdp2Structure,
-+        sizeof (EFI_ACPI_1_0_ROOT_SYSTEM_DESCRIPTION_POINTER)
-+        );
-+
-+      //
-+      // For RSDP 2.0 (Xen-4.2 only has a RSDP 2.0 table)
-+      //
-+      if (Version >= 2) {
-+
-+        //
-+        // RSDP ACPI 2.0/3.0 checksum, this is the entire table
-+        //
-+        Status = VerifyAcpiPlatformChecksum (
-+          Rsdp2Structure,
-+          sizeof (EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER)
-+          );
-+
-+        if (Status != EFI_SUCCESS) {
-+          break;
-+        }
-+
-+        //
-+        // Get Xen RSDP pointer, and then RSDT2.0 and XSDT pointers
-+        //
-+        XenAcpiTablePointerStructure->XenRsdp2Ptr = Rsdp2Structure;
-+        XenAcpiTablePointerStructure->XenRsdt2Ptr = (EFI_ACPI_DESCRIPTION_HEADER *) (UINTN) Rsdp2Structure->RsdtAddress;
-+        XenAcpiTablePointerStructure->XenXsdtPtr  = (EFI_ACPI_DESCRIPTION_HEADER *) (UINTN) Rsdp2Structure->XsdtAddress;
-+
-+        //
-+        // Detect the RSDT table, get the FADT 1.0 pointer
-+        //
-+        Rsdt2Structure = (EFI_ACPI_2_0_RSDT *) (UINTN) XenAcpiTablePointerStructure->XenRsdt2Ptr;
-+
-+        if (!AsciiStrnCmp ((CHAR8 *) &Rsdt2Structure->Header.Signature, "RSDT", 4)) {
-+
-+          Status = VerifyAcpiPlatformChecksum (
-+            Rsdt2Structure,
-+            Rsdt2Structure->Header.Length
-+            );
-+
-+          if (Status != EFI_SUCCESS) {
-+            break;
-+          }
-+
-+          //
-+          // The first one is FADT 1.0 table
-+          //
-+          XenAcpiTablePointerStructure->XenFadt1Ptr = (EFI_ACPI_1_0_FIXED_ACPI_DESCRIPTION_TABLE *) (UINTN) Rsdt2Structure->Entry[0];
-+
-+          //
-+          // Calculate the Number tables pointed by RSDT/XSDT (FADT1.0/2.0 and SSDTs)
-+          //
-+          XenAcpiTablePointerStructure->XenNumberOfTableEntries2 = (XenAcpiTablePointerStructure->XenRsdt2Ptr->Length - sizeof (EFI_ACPI_DESCRIPTION_HEADER)) / sizeof (UINT32);
-+        }
-+
-+        //
-+        // Detect the XSDT 2.0 table, get the FADT 2.0 pointer
-+        //
-+        XsdtStructure = (EFI_ACPI_2_0_XSDT *) (UINTN) XenAcpiTablePointerStructure->XenXsdtPtr;
-+
-+        if (!AsciiStrnCmp ((CHAR8 *) &XsdtStructure->Header.Signature, "XSDT", 4)) {
-+
-+          Status = VerifyAcpiPlatformChecksum (
-+            XsdtStructure,
-+            XsdtStructure->Header.Length
-+            );
-+
-+          if (Status != EFI_SUCCESS) {
-+            break;
-+          }
-+
-+          //
-+          // The first one is FADT 2.0 table
-+          //
-+          CopyMem (
-+            &Buffer64,
-+            (VOID *) (UINTN) XenAcpiTablePointerStructure->XenXsdtPtr + sizeof(EFI_ACPI_DESCRIPTION_HEADER),
-+            sizeof (UINT64)
-+           );
-+
-+           XenAcpiTablePointerStructure->XenFadt2Ptr = (EFI_ACPI_2_0_FIXED_ACPI_DESCRIPTION_TABLE *) (UINTN) HIGH_32_BITS(Buffer64);
-+           Fadt2Structure = XenAcpiTablePointerStructure->XenFadt2Ptr;
-+
-+
-+          //
-+          // Following tables are the Secondary System Description Tables (SSDT), we use a list to store them
-+          // RSDT 2.0 and XSDT 2.0 share the same SSDT in Xen-4.2
-+          //
-+          Length = XenAcpiTablePointerStructure->XenNumberOfTableEntries2;
-+          for (Index = 1; Index < Length; Index++) {
-+            //
-+            // Create a new list entry
-+            //
-+            CurrentTableList = AllocatePool (sizeof (EFI_XEN_ACPI_SSDT_2_0_TABLE_LIST));
-+            ASSERT (CurrentTableList);
-+
-+            CopyMem (
-+              &Buffer64,
-+              (VOID *) (UINTN) XenAcpiTablePointerStructure->XenXsdtPtr + sizeof(EFI_ACPI_DESCRIPTION_HEADER) + Index * sizeof (UINT64),
-+              sizeof (UINT64)
-+             );
-+            CurrentTableList->XenTablePhysicalAddress = (UINTN) HIGH_32_BITS(Buffer64);
-+
-+            AcpiTableHeader = (EFI_ACPI_DESCRIPTION_HEADER *) (UINTN) CurrentTableList->XenTablePhysicalAddress;
-+
-+            //
-+            // If we find MADT, HPET, TCPA tables
-+            //
-+            if (!AsciiStrnCmp ((CHAR8 *) &AcpiTableHeader->Signature, "APIC", 4) ||
-+                !AsciiStrnCmp ((CHAR8 *) &AcpiTableHeader->Signature, "HPET", 4) ||
-+                !AsciiStrnCmp ((CHAR8 *) &AcpiTableHeader->Signature, "TCPA", 4)) {
-+              CurrentTableList->Signature = AcpiTableHeader->Signature;
-+              CurrentTableList->Length = AcpiTableHeader->Length;
-+            }
-+            else {
-+              //
-+              // For other tables found in secondary tables 
-+              //
-+              CurrentTableList->Signature = 0;
-+              if ((Index + 1) < Length) {
-+                CurrentTableList->Length = XsdtStructure->Entry[Index+1] - XsdtStructure->Entry[Index];
-+              }
-+              else{
-+                //
-+                // The last table ( We find the secondary tables is located directly adjacent to XSDT table in Xen ACPI)
-+                //
-+                CurrentTableList->Length = (UINTN) (XenAcpiTablePointerStructure->XenXsdtPtr) - XsdtStructure->Entry[Index];
-+              }
-+            }
-+            //
-+            // Add the table to the current list of tables
-+            //
-+
-+            InsertTailList (&XenAcpiTablePointerStructure->XenSsdtTableList, &CurrentTableList->Link);
-+          }
-+
-+          //
-+          // Detect the FADT 2.0, then get the DSDT and FACS 2.0
-+          // FADT 1.0 and FADT 2.0 point to the same DSDT and FACS 2.0 in Xen-4.2
-+          //
-+          Fadt2Structure = (EFI_ACPI_2_0_FIXED_ACPI_DESCRIPTION_TABLE *) (UINTN) XenAcpiTablePointerStructure->XenFadt2Ptr;
-+
-+          if (!AsciiStrnCmp ((CHAR8 *) &Fadt2Structure->Header.Signature, "FACP", 4)) {
-+
-+            Status = VerifyAcpiPlatformChecksum (
-+              Fadt2Structure,
-+              Fadt2Structure->Header.Length
-+              );
-+
-+            if (Status != EFI_SUCCESS) {
-+              break;
-+            }
-+
-+            XenAcpiTablePointerStructure->XenFacs2Ptr = (EFI_ACPI_2_0_FIRMWARE_ACPI_CONTROL_STRUCTURE *) (UINTN) Fadt2Structure->FirmwareCtrl;
-+            XenAcpiTablePointerStructure->XenDsdt2Ptr = (EFI_ACPI_DESCRIPTION_HEADER *) (UINTN) Fadt2Structure->Dsdt;
-+          }
-+        }
-+      }
-+      else {
-+
-+        //
-+        // RSDP 1.0 reserved.
-+        //
-+        if (Status != EFI_SUCCESS) {
-+          break;
-+        }
-+      }
-+    }
-+  }
 +
 +  return EFI_SUCCESS;
 +}
@@ -1308,55 +1018,6 @@ Index: OvmfPkg/AcpiPlatformDxe/AcpiPlatform.c
 +}
 +
 +/**
-+  Entry point of the ACPI table driver.
-+  Creates and initializes an instance of the ACPI Table
-+  Protocol and installs it on a new handle.
-+
-+  @return EFI_SUCCESS           Driver initialized successfully.
-+  @return EFI_LOAD_ERROR        Failed to Initialize or has been loaded.
-+
-+**/
-+EFI_STATUS
-+EFIAPI
-+DetectXenAcpi (
-+  VOID
-+  )
-+{
-+  EFI_HOB_GUID_TYPE              *GuidHob;
-+
-+  //
-+  // See if a XenInfo HOB is available
-+  //
-+  GuidHob = GetFirstGuidHob (&gEfiXenInfoGuid);
-+  if (GuidHob != NULL) {
-+    //
-+    // We are running in Xen. Detect Xen ACPI table and get the pointer
-+    //
-+    XenAcpiTablePointerStructure = AllocateZeroPool (sizeof (XEN_ACPI_TABLE_POINTER));
-+    ASSERT (XenAcpiTablePointerStructure);
-+
-+    InitializeXenAcpiTablePointer();
-+    DetectXenAcpiTable();
-+
-+    //
-+    // If RSDP is found, we can get the Xen ACPI Tables
-+    //
-+    if (XenAcpiTablePointerStructure->XenRsdp1Ptr || XenAcpiTablePointerStructure->XenRsdp2Ptr) {
-+
-+      //
-+      // Get Xen ACPI table successfully
-+      //
-+      return EFI_SUCCESS;
-+    }
-+    else {
-+      gBS->FreePool (XenAcpiTablePointerStructure);
-+    }
-+  }
-+
-+  return EFI_NOT_FOUND;
-+}
-+
-+/**
 +  Locate the first instance of a protocol.  If the protocol requested is an
 +  FV protocol, then it will return the first FV that contains the ACPI table
 +  storage file.
@@ -1590,11 +1251,376 @@ Index: OvmfPkg/AcpiPlatformDxe/AcpiPlatform.c
 +  return EFI_SUCCESS;
 +}
 +
+Index: OvmfPkg/AcpiPlatformDxe/XenAcpiSupport.c
+===================================================================
+--- OvmfPkg/AcpiPlatformDxe/XenAcpiSupport.c	(revision 0)
++++ OvmfPkg/AcpiPlatformDxe/XenAcpiSupport.c	(revision 0)
+@@ -0,0 +1,360 @@
++/** @file
++  ACPI Platform Driver. If OVMF runs in Xen, find Xen ACPI Tables and publish them.
++  Support both Xen and QEMU.
++
++  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++  This program and the accompanying materials
++  are licensed and made available under the terms and conditions of the BSD License
++  which accompanies this distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#include "AcpiPlatform.h"
++
++/**
++  This function checks an UINT8 checksum.
++
++  @param  Buffer          Pointer to buffer to checksum
++  @param  Size            Number of bytes to checksum
++
++  @return EFI_SUCCESS     The function completed successfully.
++
++**/
++EFI_STATUS
++VerifyAcpiPlatformChecksum (
++  IN VOID       *Buffer,
++  IN UINTN      Size
++  )
++{
++  UINT8 Sum;
++  UINT8 *Ptr;
++
++  Sum = 0;
++  //
++  // Initialize pointer
++  //
++  Ptr = Buffer;
++
++  //
++  // Add all content of buffer
++  //
++  while ((Size--) != 0) {
++    Sum = (UINT8) (Sum + (*Ptr++));
++  }
++  //
++  // Check checksum
++  //
++  if (Sum != 0){
++    return EFI_CRC_ERROR;
++  }
++
++  return EFI_SUCCESS;
++}
++
++/**
++  Initialize the XenAcpiTablePointer Structure
++
++  @return EFI_SUCCESS             The function completed successfully.
++
++**/
++EFI_STATUS
++EFIAPI
++InitializeXenAcpiTablePointer (
++  VOID
++  )
++{
++  XenAcpiTablePointerStructure->XenRsdp1Ptr = NULL;
++  XenAcpiTablePointerStructure->XenRsdp2Ptr = NULL;  // Xen RSDP 2.0
++  XenAcpiTablePointerStructure->XenRsdt1Ptr = NULL;
++  XenAcpiTablePointerStructure->XenRsdt2Ptr = NULL;  // Xen RSDT 2.0
++  XenAcpiTablePointerStructure->XenXsdtPtr  = NULL;  // Xen XSDT 2.0
++  XenAcpiTablePointerStructure->XenFadt1Ptr = NULL;  // Xen FADT 1.0
++  XenAcpiTablePointerStructure->XenFadt2Ptr = NULL;  // Xen FADT 2.0
++  XenAcpiTablePointerStructure->XenFacs1Ptr = NULL;
++  XenAcpiTablePointerStructure->XenFacs2Ptr = NULL;  // Xen FACS 2.0
++  XenAcpiTablePointerStructure->XenDsdt1Ptr = NULL;
++  XenAcpiTablePointerStructure->XenDsdt2Ptr = NULL;  // Xen DSDT
++
++  XenAcpiTablePointerStructure->XenNumberOfTableEntries1 = 0;
++  XenAcpiTablePointerStructure->XenNumberOfTableEntries2 = 0;
++
++  return EFI_SUCCESS;
++}
++
++/**
++  Figures out if Xen hvmloader provides ACPI Table for HVM. If it provides, get the pointers of each table
++
++  @return EFI_SUCCESS             The function completed successfully.
++
++**/
++EFI_STATUS
++EFIAPI
++DetectXenAcpiTable (
++  VOID
++  )
++{
++  UINTN                                        XenAcpiPtr;
++
++  EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER *Rsdp2Structure;
++  EFI_ACPI_2_0_RSDT                            *Rsdt2Structure; //Ptr to RSDT2 header
++  EFI_ACPI_2_0_XSDT                            *XsdtStructure;  //Ptr to XSDT2 header
++  EFI_ACPI_2_0_FIXED_ACPI_DESCRIPTION_TABLE    *Fadt2Structure; //Ptr to FADT header
++  EFI_ACPI_DESCRIPTION_HEADER                  *AcpiTableHeader; //Ptr to DSDT header
++
++  EFI_ACPI_TABLE_VERSION                       Version;
++  EFI_STATUS                                   Status;
++  EFI_XEN_ACPI_SSDT_2_0_TABLE_LIST             *CurrentTableList;
++  UINT64                                       Buffer64;
++  UINTN                                        Index;
++  UINT8                                        Length;
++
++  //
++  // Initialize the XEN_ACPI_TABLE_POINTER
++  //
++  InitializeXenAcpiTablePointer();
++  InitializeListHead (&XenAcpiTablePointerStructure->XenSsdtTableList);
++
++  //
++  // Detect the RSDP table
++  //
++  for (XenAcpiPtr = XEN_ACPI_PHYSICAL_ADDRESS; XenAcpiPtr < XEN_BIOS_PHYSICAL_END; XenAcpiPtr += 0x10) {
++
++    Rsdp2Structure = (EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER *) (UINTN) XenAcpiPtr;
++
++    if (!AsciiStrnCmp ((CHAR8 *) &Rsdp2Structure->Signature, "RSD PTR ", 8)) {
++      //
++      // Detect the Acpi Version
++      //
++      Version = Rsdp2Structure->Revision;
++
++      //
++      // RSDP ACPI 1.0 checksum for 2.0/3.0 table.  This is only the first 20 bytes of the structure
++      //
++      Status = VerifyAcpiPlatformChecksum (
++        Rsdp2Structure,
++        sizeof (EFI_ACPI_1_0_ROOT_SYSTEM_DESCRIPTION_POINTER)
++        );
++
++      //
++      // For RSDP 2.0 (Xen-4.2 only has a RSDP 2.0 table)
++      //
++      if (Version >= 2) {
++
++        //
++        // RSDP ACPI 2.0/3.0 checksum, this is the entire table
++        //
++        Status = VerifyAcpiPlatformChecksum (
++          Rsdp2Structure,
++          sizeof (EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER)
++          );
++
++        if (Status != EFI_SUCCESS) {
++          break;
++        }
++
++        //
++        // Get Xen RSDP pointer, and then RSDT2.0 and XSDT pointers
++        //
++        XenAcpiTablePointerStructure->XenRsdp2Ptr = Rsdp2Structure;
++        XenAcpiTablePointerStructure->XenRsdt2Ptr = (EFI_ACPI_DESCRIPTION_HEADER *) (UINTN) Rsdp2Structure->RsdtAddress;
++        XenAcpiTablePointerStructure->XenXsdtPtr  = (EFI_ACPI_DESCRIPTION_HEADER *) (UINTN) Rsdp2Structure->XsdtAddress;
++
++        //
++        // Detect the RSDT table, get the FADT 1.0 pointer
++        //
++        Rsdt2Structure = (EFI_ACPI_2_0_RSDT *) (UINTN) XenAcpiTablePointerStructure->XenRsdt2Ptr;
++
++        if (!AsciiStrnCmp ((CHAR8 *) &Rsdt2Structure->Header.Signature, "RSDT", 4)) {
++
++          Status = VerifyAcpiPlatformChecksum (
++            Rsdt2Structure,
++            Rsdt2Structure->Header.Length
++            );
++
++          if (Status != EFI_SUCCESS) {
++            break;
++          }
++
++          //
++          // The first one is FADT 1.0 table
++          //
++          XenAcpiTablePointerStructure->XenFadt1Ptr = (EFI_ACPI_1_0_FIXED_ACPI_DESCRIPTION_TABLE *) (UINTN) Rsdt2Structure->Entry[0];
++
++          //
++          // Calculate the Number tables pointed by RSDT/XSDT (FADT1.0/2.0 and SSDTs)
++          //
++          XenAcpiTablePointerStructure->XenNumberOfTableEntries2 = (XenAcpiTablePointerStructure->XenRsdt2Ptr->Length - sizeof (EFI_ACPI_DESCRIPTION_HEADER)) / sizeof (UINT32);
++        }
++
++        //
++        // Detect the XSDT 2.0 table, get the FADT 2.0 pointer
++        //
++        XsdtStructure = (EFI_ACPI_2_0_XSDT *) (UINTN) XenAcpiTablePointerStructure->XenXsdtPtr;
++
++        if (!AsciiStrnCmp ((CHAR8 *) &XsdtStructure->Header.Signature, "XSDT", 4)) {
++
++          Status = VerifyAcpiPlatformChecksum (
++            XsdtStructure,
++            XsdtStructure->Header.Length
++            );
++
++          if (Status != EFI_SUCCESS) {
++            break;
++          }
++
++          //
++          // The first one is FADT 2.0 table
++          //
++          CopyMem (
++            &Buffer64,
++            (VOID *) (UINTN) XenAcpiTablePointerStructure->XenXsdtPtr + sizeof(EFI_ACPI_DESCRIPTION_HEADER),
++            sizeof (UINT64)
++           );
++
++           XenAcpiTablePointerStructure->XenFadt2Ptr = (EFI_ACPI_2_0_FIXED_ACPI_DESCRIPTION_TABLE *) (UINTN) HIGH_32_BITS(Buffer64);
++           Fadt2Structure = XenAcpiTablePointerStructure->XenFadt2Ptr;
++
++
++          //
++          // Following tables are the Secondary System Description Tables (SSDT), we use a list to store them
++          // RSDT 2.0 and XSDT 2.0 share the same SSDT in Xen-4.2
++          //
++          Length = XenAcpiTablePointerStructure->XenNumberOfTableEntries2;
++          for (Index = 1; Index < Length; Index++) {
++            //
++            // Create a new list entry
++            //
++            CurrentTableList = AllocatePool (sizeof (EFI_XEN_ACPI_SSDT_2_0_TABLE_LIST));
++            ASSERT (CurrentTableList);
++
++            CopyMem (
++              &Buffer64,
++              (VOID *) (UINTN) XenAcpiTablePointerStructure->XenXsdtPtr + sizeof(EFI_ACPI_DESCRIPTION_HEADER) + Index * sizeof (UINT64),
++              sizeof (UINT64)
++             );
++            CurrentTableList->XenTablePhysicalAddress = (UINTN) HIGH_32_BITS(Buffer64);
++
++            AcpiTableHeader = (EFI_ACPI_DESCRIPTION_HEADER *) (UINTN) CurrentTableList->XenTablePhysicalAddress;
++
++            //
++            // If we find MADT, HPET, TCPA tables
++            //
++            if (!AsciiStrnCmp ((CHAR8 *) &AcpiTableHeader->Signature, "APIC", 4) ||
++                !AsciiStrnCmp ((CHAR8 *) &AcpiTableHeader->Signature, "HPET", 4) ||
++                !AsciiStrnCmp ((CHAR8 *) &AcpiTableHeader->Signature, "TCPA", 4)) {
++              CurrentTableList->Signature = AcpiTableHeader->Signature;
++              CurrentTableList->Length = AcpiTableHeader->Length;
++            }
++            else {
++              //
++              // For other tables found in secondary tables 
++              //
++              CurrentTableList->Signature = 0;
++              if ((Index + 1) < Length) {
++                CurrentTableList->Length = XsdtStructure->Entry[Index+1] - XsdtStructure->Entry[Index];
++              }
++              else{
++                //
++                // The last table ( We find the secondary tables is located directly adjacent to XSDT table in Xen ACPI)
++                //
++                CurrentTableList->Length = (UINTN) (XenAcpiTablePointerStructure->XenXsdtPtr) - XsdtStructure->Entry[Index];
++              }
++            }
++            //
++            // Add the table to the current list of tables
++            //
++
++            InsertTailList (&XenAcpiTablePointerStructure->XenSsdtTableList, &CurrentTableList->Link);
++          }
++
++          //
++          // Detect the FADT 2.0, then get the DSDT and FACS 2.0
++          // FADT 1.0 and FADT 2.0 point to the same DSDT and FACS 2.0 in Xen-4.2
++          //
++          Fadt2Structure = (EFI_ACPI_2_0_FIXED_ACPI_DESCRIPTION_TABLE *) (UINTN) XenAcpiTablePointerStructure->XenFadt2Ptr;
++
++          if (!AsciiStrnCmp ((CHAR8 *) &Fadt2Structure->Header.Signature, "FACP", 4)) {
++
++            Status = VerifyAcpiPlatformChecksum (
++              Fadt2Structure,
++              Fadt2Structure->Header.Length
++              );
++
++            if (Status != EFI_SUCCESS) {
++              break;
++            }
++
++            XenAcpiTablePointerStructure->XenFacs2Ptr = (EFI_ACPI_2_0_FIRMWARE_ACPI_CONTROL_STRUCTURE *) (UINTN) Fadt2Structure->FirmwareCtrl;
++            XenAcpiTablePointerStructure->XenDsdt2Ptr = (EFI_ACPI_DESCRIPTION_HEADER *) (UINTN) Fadt2Structure->Dsdt;
++          }
++        }
++      }
++      else {
++
++        //
++        // RSDP 1.0 reserved.
++        //
++        if (Status != EFI_SUCCESS) {
++          break;
++        }
++      }
++    }
++  }
++
++  return EFI_SUCCESS;
++}
++
++/**
++  Entry point of the ACPI table driver.
++  Creates and initializes an instance of the ACPI Table
++  Protocol and installs it on a new handle.
++
++  @return EFI_SUCCESS           Driver initialized successfully.
++  @return EFI_LOAD_ERROR        Failed to Initialize or has been loaded.
++
++**/
++EFI_STATUS
++EFIAPI
++DetectXenAcpi (
++  VOID
++  )
++{
++  EFI_HOB_GUID_TYPE              *GuidHob;
++
++  //
++  // See if a XenInfo HOB is available
++  //
++  GuidHob = GetFirstGuidHob (&gEfiXenInfoGuid);
++  if (GuidHob != NULL) {
++    //
++    // We are running in Xen. Detect Xen ACPI table and get the pointer
++    //
++    XenAcpiTablePointerStructure = AllocateZeroPool (sizeof (XEN_ACPI_TABLE_POINTER));
++    ASSERT (XenAcpiTablePointerStructure);
++
++    InitializeXenAcpiTablePointer();
++    DetectXenAcpiTable();
++
++    //
++    // If RSDP is found, we can get the Xen ACPI Tables
++    //
++    if (XenAcpiTablePointerStructure->XenRsdp1Ptr || XenAcpiTablePointerStructure->XenRsdp2Ptr) {
++
++      //
++      // Get Xen ACPI table successfully
++      //
++      return EFI_SUCCESS;
++    }
++    else {
++      gBS->FreePool (XenAcpiTablePointerStructure);
++    }
++  }
++
++  return EFI_NOT_FOUND;
++}
++
 Index: OvmfPkg/AcpiPlatformDxe/AcpiPlatform.h
 ===================================================================
 --- OvmfPkg/AcpiPlatformDxe/AcpiPlatform.h	(revision 0)
 +++ OvmfPkg/AcpiPlatformDxe/AcpiPlatform.h	(revision 0)
-@@ -0,0 +1,146 @@
+@@ -0,0 +1,160 @@
 +/** @file
 +  ACPI Platform Driver. Publish Xen ACPI Table inside OVMF. Support both Xen and QEMU.
 +
@@ -1610,9 +1636,8 @@ Index: OvmfPkg/AcpiPlatformDxe/AcpiPlatform.h
 +
 +**/
 +
-+#ifndef _XEN_ACPI_TABLE_DXE_H_
-+#define _XEN_ACPI_TABLE_DXE_H_
-+
++#ifndef _ACPI_PLATFORM_DXE_H_
++#define _ACPI_PLATFORM_DXE_H_
 +
 +#include <PiDxe.h>
 +
@@ -1643,8 +1668,6 @@ Index: OvmfPkg/AcpiPlatformDxe/AcpiPlatform.h
 +// The maximum number of tables this driver supports
 +//
 +#define EFI_ACPI_MAX_NUM_TABLES 20
-+
-+UINTN mEfiAcpiMaxNumTables = EFI_ACPI_MAX_NUM_TABLES;
 +
 +//
 +// Macro to get the high 32 bits of a 64 bit address
@@ -1740,12 +1763,29 @@ Index: OvmfPkg/AcpiPlatformDxe/AcpiPlatform.h
 +  UINTN                                         XenNumberOfTableEntries2;     // Number of Xen ACPI 2.0 tables
 +} XEN_ACPI_TABLE_POINTER;
 +
++extern XEN_ACPI_TABLE_POINTER      *XenAcpiTablePointerStructure;
++
++/**
++  Entry point of the ACPI table driver.
++  Creates and initializes an instance of the ACPI Table
++  Protocol and installs it on a new handle.
++
++  @return EFI_SUCCESS           Driver initialized successfully.
++  @return EFI_LOAD_ERROR        Failed to Initialize or has been loaded.
++
++**/
++EFI_STATUS
++EFIAPI
++DetectXenAcpi (
++  VOID
++  );
++
 +#endif
 Index: OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf
 ===================================================================
 --- OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf	(revision 0)
 +++ OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf	(revision 0)
-@@ -0,0 +1,65 @@
+@@ -0,0 +1,66 @@
 +## @file
 +#  ACPI Platform Driver. Publish Xen ACPI Table inside OVMF. Support both Xen and QEMU.
 +#
@@ -1773,11 +1813,13 @@ Index: OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf
 +# The following information is for reference only and not required by the build tools.
 +#
 +#  VALID_ARCHITECTURES           = IA32 X64 IPF EBC
+
 +#
 +
 +[Sources]
 +  AcpiPlatform.h
 +  AcpiPlatform.c
++  XenAcpiSupport.c
 +
 +[Packages]
 +  MdePkg/MdePkg.dec
@@ -1925,7 +1967,7 @@ Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.c
 ===================================================================
 --- OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.c	(revision 0)
 +++ OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.c	(revision 0)
-@@ -0,0 +1,553 @@
+@@ -0,0 +1,508 @@
 +/** @file
 +  Publish Xen hvmloader SMBIOS inside OVMF. This code parses Xen SMBIOS tables and add them into UEFI SMBIOS by calling SMBIOS protocol.
 +
@@ -2250,51 +2292,6 @@ Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.c
 +}
 +
 +/**
-+  Figures out if Xen hvmloader provides SMBIOS for HVM.
-+
-+  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
-+
-+**/
-+SMBIOS_TABLE_ENTRY_POINT *
-+XenSmbiosDetect (
-+  VOID
-+  )
-+{
-+
-+  UINTN                     XenSmbiosPtr;
-+  SMBIOS_TABLE_ENTRY_POINT  *XenSmbiosEntryPointStructure;
-+  UINTN                     Index;
-+  UINT8                     Length;
-+  UINT8                     Checksum;
-+  CHAR8                     *SmbiosBit;
-+
-+  for (XenSmbiosPtr = XEN_SMBIOS_PHYSICAL_ADDRESS; XenSmbiosPtr < XEN_SMBIOS_PHYSICAL_END; XenSmbiosPtr += 0x10) {
-+
-+    XenSmbiosEntryPointStructure = (SMBIOS_TABLE_ENTRY_POINT *) (UINTN) XenSmbiosPtr;
-+
-+    if (!AsciiStrnCmp ((CHAR8 *) XenSmbiosEntryPointStructure->AnchorString, "_SM_", 4) && !AsciiStrnCmp ((CHAR8 *) XenSmbiosEntryPointStructure->IntermediateAnchorString, "_DMI_", 5)) {
-+      //
-+      // Check the structure's checksum
-+      //
-+      SmbiosBit = (CHAR8 *) XenSmbiosPtr;
-+      Length = XenSmbiosEntryPointStructure->EntryPointLength;
-+      Checksum = 0;
-+
-+      for (Index = 0; Index < Length; Index++) {
-+        Checksum += SmbiosBit[Index];
-+      }
-+      if (Checksum != 0) {
-+        break;
-+      }
-+
-+      return XenSmbiosEntryPointStructure;
-+    }
-+  }
-+
-+  return NULL;
-+}
-+
-+/**
 +  Get SMBIOS record length.
 +
 +  @param  SmbiosTable   SMBIOS pointer.
@@ -2445,7 +2442,6 @@ Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.c
 +  //
 +  GuidHob = GetFirstGuidHob (&gEfiXenInfoGuid);
 +  if (GuidHob != NULL) {
-
 +    //
 +    // We are running inside Xen HVM. Then, find the Xen SMBIOS.
 +    //
@@ -2480,11 +2476,76 @@ Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.c
 +
 +  return EFI_SUCCESS;
 +}
+Index: OvmfPkg/SmbiosPlatformDxe/XenSmbiosSupport.c
+===================================================================
+--- OvmfPkg/SmbiosPlatformDxe/XenSmbiosSupport.c	(revision 0)
++++ OvmfPkg/SmbiosPlatformDxe/XenSmbiosSupport.c	(revision 0)
+@@ -0,0 +1,60 @@
++/** @file
++  Detect Xen hvmloader SMBIOS inside OVMF.
++
++  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++  This program and the accompanying materials                          
++  are licensed and made available under the terms and conditions of the BSD License         
++  which accompanies this distribution.  The full text of the license may be found at        
++  http://opensource.org/licenses/bsd-license.php                                            
++                                                                                          
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,                     
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.             
++
++**/
++
++#include "SmbiosPlatformDxe.h"
++
++/**
++  Figures out if Xen hvmloader provides SMBIOS for HVM.
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++SMBIOS_TABLE_ENTRY_POINT *
++XenSmbiosDetect (
++  VOID
++  )
++{
++  UINTN                     XenSmbiosPtr;
++  SMBIOS_TABLE_ENTRY_POINT  *XenSmbiosEntryPointStructure;
++  UINTN                     Index;
++  UINT8                     Length;
++  UINT8                     Checksum;
++  CHAR8                     *SmbiosBit;
++
++  for (XenSmbiosPtr = XEN_SMBIOS_PHYSICAL_ADDRESS; XenSmbiosPtr < XEN_SMBIOS_PHYSICAL_END; XenSmbiosPtr += 0x10) {
++
++    XenSmbiosEntryPointStructure = (SMBIOS_TABLE_ENTRY_POINT *) (UINTN) XenSmbiosPtr;
++
++    if (!AsciiStrnCmp ((CHAR8 *) XenSmbiosEntryPointStructure->AnchorString, "_SM_", 4) && !AsciiStrnCmp ((CHAR8 *) XenSmbiosEntryPointStructure->IntermediateAnchorString, "_DMI_", 5)) {
++      //
++      // Check the structure's checksum
++      //
++      SmbiosBit = (CHAR8 *) XenSmbiosPtr;
++      Length = XenSmbiosEntryPointStructure->EntryPointLength;
++      Checksum = 0;
++
++      for (Index = 0; Index < Length; Index++) {
++        Checksum += SmbiosBit[Index];
++      }
++      if (Checksum != 0) {
++        break;
++      }
++
++      return XenSmbiosEntryPointStructure;
++    }
++  }
++
++  return NULL;
++}
 Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.h
 ===================================================================
 --- OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.h	(revision 0)
 +++ OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.h	(revision 0)
-@@ -0,0 +1,160 @@
+@@ -0,0 +1,159 @@
 +/** @file
 +  This code passthroughs Xen hvmloader SMBIOS inside OVMF.
 +
@@ -2500,9 +2561,8 @@ Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.h
 +
 +**/
 +
-+#ifndef _XEN_SMBIOS_DXE_H_
-+#define _XEN_SMBIOS_DXE_H_
-+
++#ifndef _SMBIOS_PLATFORM_DXE_H_
++#define _SMBIOS_PLATFORM_DXE_H_
 +
 +#include <PiDxe.h>
 +
@@ -2649,7 +2709,7 @@ Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
 ===================================================================
 --- OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf	(revision 0)
 +++ OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf	(revision 0)
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,65 @@
 +## @file
 +#  Component description file for Xen hvmloader Smbios module. 
 +#  This driver initializes and installs the Xen hvmloader SMBIOS protocol.
@@ -2682,8 +2742,9 @@ Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
 +#
 +
 +[Sources]
-+  SmbiosPlatformDxe.c
 +  SmbiosPlatformDxe.h
++  SmbiosPlatformDxe.c
++  XenSmbiosSupport.c
 +
 +[Packages]
 +  MdePkg/MdePkg.dec
