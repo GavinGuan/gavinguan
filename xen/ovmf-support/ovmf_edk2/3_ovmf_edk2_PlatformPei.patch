@@ -1,0 +1,250 @@
+Index: OvmfPkg/PlatformPei/Platform.c
+===================================================================
+--- OvmfPkg/PlatformPei/Platform.c	(revision 12048)
++++ OvmfPkg/PlatformPei/Platform.c	(working copy)
+@@ -1,6 +1,8 @@
+ /**@file
+   Platform PEI driver
+ 
++  Modified to support Xen HVM - Andrei Warkentin <andreiw@motorola.com>
++
+   Copyright (c) 2006 - 2010, Intel Corporation. All rights reserved.<BR>
+   This program and the accompanying materials
+   are licensed and made available under the terms and conditions of the BSD License
+@@ -30,11 +32,14 @@
+ #include <Library/PeiServicesLib.h>
+ #include <Library/ResourcePublicationLib.h>
+ #include <Guid/MemoryTypeInformation.h>
++#include <Guid/XenInfo.h>
+ #include <Ppi/MasterBootMode.h>
+ 
+ #include "Platform.h"
+ #include "Cmos.h"
+ 
++EFI_XEN_INFO mXenInfo;
++
+ EFI_MEMORY_TYPE_INFORMATION mDefaultMemoryTypeInformation[] = {
+   { EfiACPIMemoryNVS,       0x004 },
+   { EfiACPIReclaimMemory,   0x008 },
+@@ -73,6 +78,22 @@
+     );
+ }
+ 
++VOID
++AddReservedMemoryBaseSizeHob (
++  EFI_PHYSICAL_ADDRESS        MemoryBase,
++  UINT64                      MemorySize
++  )
++{
++  BuildResourceDescriptorHob (
++    EFI_RESOURCE_MEMORY_RESERVED,
++      EFI_RESOURCE_ATTRIBUTE_PRESENT     |
++      EFI_RESOURCE_ATTRIBUTE_INITIALIZED |
++      EFI_RESOURCE_ATTRIBUTE_UNCACHEABLE |
++      EFI_RESOURCE_ATTRIBUTE_TESTED,
++    MemoryBase,
++    MemorySize
++    );
++}
+ 
+ VOID
+ AddIoMemoryRangeHob (
+@@ -147,7 +168,8 @@
+ 
+ VOID
+ MemMapInitialization (
+-  EFI_PHYSICAL_ADDRESS  TopOfMemory
++  EFI_PHYSICAL_ADDRESS  TopOfMemory,
++  BOOLEAN               XenHvm
+   )
+ {
+   //
+@@ -162,24 +184,44 @@
+   //
+   // Add PCI IO Port space available for PCI resource allocations.
+   //
+-  BuildResourceDescriptorHob (
+-    EFI_RESOURCE_IO,
++  if (XenHvm) {
++    BuildResourceDescriptorHob (
++      EFI_RESOURCE_IO,
+       EFI_RESOURCE_ATTRIBUTE_PRESENT     |
+       EFI_RESOURCE_ATTRIBUTE_INITIALIZED,
+-    0x1000,
+-    0xF000
+-    );
++      0xC000,
++      0x4000
++      );
++  } else {
++    BuildResourceDescriptorHob (
++      EFI_RESOURCE_IO,
++      EFI_RESOURCE_ATTRIBUTE_PRESENT     |
++      EFI_RESOURCE_ATTRIBUTE_INITIALIZED,
++      0x1000,
++      0xF000
++      );
++  }
+ 
+   //
+   // Add PCI MMIO space available to PCI resource allocations
+   //
+-  if (TopOfMemory < BASE_2GB) {
+-    AddIoMemoryBaseSizeHob (BASE_2GB, 0xFEC00000 - BASE_2GB);
++  if (XenHvm) {
++    AddIoMemoryBaseSizeHob (TopOfMemory, 0xFC000000 - TopOfMemory);
+   } else {
+-    AddIoMemoryBaseSizeHob (TopOfMemory, 0xFEC00000 - TopOfMemory);
++    if (TopOfMemory < BASE_2GB) {
++      AddIoMemoryBaseSizeHob (BASE_2GB, 0xFEC00000 - BASE_2GB);
++    } else {
++      AddIoMemoryBaseSizeHob (TopOfMemory, 0xFEC00000 - TopOfMemory);
++    }
+   }
+ 
+   //
++  // Reserve away HVMLOADER reserved memory [0xFC000000,0xFD000000).
++  // This needs to match HVMLOADER RESERVED_MEMBASE/RESERVED_MEMSIZE.
++  //
++  AddReservedMemoryBaseSizeHob (0xFC000000, 0x1000000);
++
++  //
+   // Local APIC range
+   //
+   AddIoMemoryBaseSizeHob (0xFEC80000, SIZE_512KB);
+@@ -209,11 +251,6 @@
+   // Build the CPU hob with 36-bit addressing and 16-bits of IO space.
+   //
+   BuildCpuHob (36, 16);
+-
+-  //
+-  // Set the PM I/O base address to 0x400
+-  //
+-  PciAndThenOr32 (PCI_LIB_ADDRESS (0, 1, 3, 0x40), (UINT32) ~0xfc0, 0x400);
+ }
+ 
+ 
+@@ -277,8 +314,84 @@
+   }
+ }
+ 
++/**
++  Connects to the Hypervisor.
++ 
++  @param  XenLeaf     CPUID index used to connect.
+ 
++  @return EFI_STATUS
++
++**/
++EFI_STATUS
++XenConnect (
++  UINT32 XenLeaf
++  )
++{
++  UINT32 Index;
++  UINT32 TransferReg;
++  UINT32 TransferPages;
++  UINT32 XenVersion;
++
++  AsmCpuid (XenLeaf + 2, &TransferPages, &TransferReg, NULL, NULL);
++  mXenInfo.HyperPages = AllocatePages (TransferPages);
++  if (!mXenInfo.HyperPages) {
++    return EFI_OUT_OF_RESOURCES;
++  }
++
++  for (Index = 0; Index < TransferPages; Index++) {
++    AsmWriteMsr64 (TransferReg,
++                   (UINTN) mXenInfo.HyperPages +
++		   (Index << EFI_PAGE_SHIFT) + Index);
++  }
++
++  AsmCpuid (XenLeaf + 1, &XenVersion, NULL, NULL, NULL);
++  DEBUG ((EFI_D_ERROR, "Detected Xen version %d.%d\n",
++	  XenVersion >> 16, XenVersion & 0xFFFF));
++  mXenInfo.VersionMajor = XenVersion >> 16;
++  mXenInfo.VersionMinor = XenVersion & 0xFFFF;
++
++  /* TBD: Locate hvm_info and reserve it away. */
++  mXenInfo.HvmInfo = NULL;
++
++  BuildGuidDataHob (
++    &gEfiXenInfoGuid,
++    &mXenInfo,
++    sizeof(mXenInfo)
++    );
++
++  return EFI_SUCCESS;
++}
++
+ /**
++  Figures out if we are running inside Xen HVM.
++
++  @return UINT32     CPUID index used to connect to HV.
++
++**/
++UINT32
++XenDetect (
++  VOID
++  )
++{
++
++  UINT32 XenLeaf;
++  UINT8 Signature[13];
++
++  for (XenLeaf = 0x40000000; XenLeaf < 0x40010000; XenLeaf += 0x100) {
++    AsmCpuid (XenLeaf, NULL, (UINT32 *) &Signature[0],
++              (UINT32 *) &Signature[4],
++              (UINT32 *) &Signature[8]);
++    Signature[12] = '\0';
++
++    if (!AsciiStrCmp ((CHAR8 *) Signature, "XenVMMXenVMM")) {
++      return XenLeaf;
++    }
++  }
++
++  return 0;
++}
++
++/**
+   Perform Platform PEI initialization.
+ 
+   @param  FileHandle      Handle of the file being invoked.
+@@ -295,18 +408,25 @@
+   )
+ {
+   EFI_PHYSICAL_ADDRESS  TopOfMemory;
++  UINT32 XenLeaf;
+ 
+   DEBUG ((EFI_D_ERROR, "Platform PEIM Loaded\n"));
+ 
++  XenLeaf = XenDetect ();
++
+   DebugDumpCmos ();
+ 
+   TopOfMemory = MemDetect ();
+ 
++  if (XenLeaf) {
++    XenConnect (XenLeaf);
++  }
++
+   ReserveEmuVariableNvStore ();
+ 
+   PeiFvInitialization ();
+ 
+-  MemMapInitialization (TopOfMemory);
++  MemMapInitialization (TopOfMemory, XenLeaf ? TRUE : FALSE);
+ 
+   MiscInitialization ();
+ 
+Index: OvmfPkg/PlatformPei/PlatformPei.inf
+===================================================================
+--- OvmfPkg/PlatformPei/PlatformPei.inf	(revision 12048)
++++ OvmfPkg/PlatformPei/PlatformPei.inf	(working copy)
+@@ -41,6 +41,7 @@
+ 
+ [Guids]
+   gEfiMemoryTypeInformationGuid
++  gEfiXenInfoGuid
+ 
+ [LibraryClasses]
+   DebugLib
