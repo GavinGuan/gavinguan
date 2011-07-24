@@ -1,0 +1,50 @@
+# HG changeset patch
+# User gbtju85@gmail.com
+#
+
+Replace bios_relocate hook with bios_load hook in hvmloader.
+This patch also contains part of the contents of Enabling UEFI BIOS(OVMF) support in Xen-unstable HVM
+
+Sign-off-by: Bei Guan <gbtju85@gmail.com>
+
+diff -r 42edf1481c57 tools/firmware/hvmloader/hvmloader.c
+--- a/tools/firmware/hvmloader/hvmloader.c	Fri Jul 22 08:55:19 2011 +0100
++++ b/tools/firmware/hvmloader/hvmloader.c	Sun Jul 24 02:22:42 2011 +0800
+@@ -360,6 +360,8 @@
+ #ifdef ENABLE_SEABIOS
+     { "seabios", &seabios_config, },
+ #endif
++    { "ovmf-ia32", &ovmf32_config, },
++    { "ovmf-x64", &ovmf64_config, },
+     { NULL, NULL }
+ };
+ 
+@@ -416,12 +418,13 @@
+         bios->create_smbios_tables();
+     }
+ 
+-    printf("Loading %s ...\n", bios->name);
+-    memcpy((void *)bios->bios_address, bios->image,
+-           bios->image_size);
+-
+-    if (bios->bios_relocate)
+-        bios->bios_relocate();
++    if (bios->load) {
++        bios->load(bios);
++    } else {
++        printf("Loading %s ...\n", bios->name);
++        memcpy((void *)bios->bios_address, bios->image,
++               bios->image_size);
++    }
+ 
+     if ( (hvm_info->nr_vcpus > 1) || hvm_info->apic_mode ) {
+         if ( bios->create_mp_tables )
+@@ -451,6 +454,8 @@
+             vgabios_sz = round_option_rom(
+                 (*(uint8_t *)(VGABIOS_PHYSICAL_ADDRESS+2)) * 512);
+             break;
++        case VGA_custom:
++            break;
+         default:
+             printf("No emulated VGA adaptor ...\n");
+             break;

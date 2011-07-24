@@ -1,0 +1,49 @@
+# HG changeset patch
+# User gbtju85@gmail.com
+#
+
+Replace bios_relocate hook with bios_load hook in hvmloader.
+This patch also contains part of the contents of Enabling UEFI BIOS(OVMF) support in Xen-unstable HVM
+
+Sign-off-by: Bei Guan <gbtju85@gmail.com>
+
+diff -r 42edf1481c57 tools/firmware/hvmloader/config.h
+--- a/tools/firmware/hvmloader/config.h	Fri Jul 22 08:55:19 2011 +0100
++++ b/tools/firmware/hvmloader/config.h	Sun Jul 24 02:22:42 2011 +0800
+@@ -3,7 +3,7 @@
+ 
+ #include <stdint.h>
+ 
+-enum virtual_vga { VGA_none, VGA_std, VGA_cirrus, VGA_pt };
++enum virtual_vga { VGA_none, VGA_std, VGA_cirrus, VGA_pt, VGA_custom };
+ extern enum virtual_vga virtual_vga;
+ 
+ struct bios_config {
+@@ -16,6 +16,9 @@
+     /* Physical address to load at */
+     unsigned int bios_address;
+ 
++    /* Custom load function. */
++    void (*load)(const struct bios_config *config);
++
+     /* ROMS */
+     int load_roms;
+     unsigned int optionrom_start, optionrom_end;
+@@ -23,8 +26,6 @@
+     void (*bios_info_setup)(void);
+     void (*bios_info_finish)(void);
+ 
+-    void (*bios_relocate)(void);
+-
+     void (*vm86_setup)(void);
+     void (*e820_setup)(void);
+ 
+@@ -36,6 +37,8 @@
+ 
+ extern struct bios_config rombios_config;
+ extern struct bios_config seabios_config;
++extern struct bios_config ovmf32_config;
++extern struct bios_config ovmf64_config;
+ 
+ #define PAGE_SHIFT 12
+ #define PAGE_SIZE  (1ul << PAGE_SHIFT)
