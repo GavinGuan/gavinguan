@@ -1,0 +1,252 @@
+Index: OvmfPkg/HypercallTestDxe/HypercallTestDxe.inf
+===================================================================
+--- OvmfPkg/HypercallTestDxe/HypercallTestDxe.inf	(revision 0)
++++ OvmfPkg/HypercallTestDxe/HypercallTestDxe.inf	(revision 0)
+@@ -0,0 +1,56 @@
++## @file
++#  Xen PV test.
++#
++#  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++#
++#  This program and the accompanying materials
++#  are licensed and made available under the terms and conditions of the BSD License
++#  which accompanies this distribution. The full text of the license may be found at
++#  http://opensource.org/licenses/bsd-license.php
++#  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++#  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++#
++#
++##
++
++[Defines]
++  INF_VERSION                    = 0x00010005
++  BASE_NAME                      = HypercallTestDxe
++  FILE_GUID                      = 9169e45e-5db7-4b5c-9d1e-016fec787c2c
++  MODULE_TYPE                    = DXE_DRIVER
++  VERSION_STRING                 = 1.0
++
++  ENTRY_POINT                    = XenParaVirtualizationTestEntry
++
++#
++# The following information is for reference only and not required by the build tools.
++#
++#  VALID_ARCHITECTURES           = IA32 X64 IPF EBC
++#
++
++[Sources]
++  HypercallTestDxe.h
++  HypercallTestDxe.c
++
++[Packages]
++  MdePkg/MdePkg.dec
++  OvmfPkg/OvmfPkg.dec
++
++[LibraryClasses]
++  UefiDriverEntryPoint
++  UefiBootServicesTableLib
++  DebugLib
++  HobLib
++
++  BaseLib
++
++[Protocols]
++  gEfiXenHvProtocolGuid                       # PROTOCOL ALWAYS_PRODUCED
++
++[Guids]
++  gEfiXenInfoGuid
++
++[FixedPcd]
++
++[Depex]
++  TRUE
+Index: OvmfPkg/HypercallTestDxe/HypercallTestDxe.c
+===================================================================
+--- OvmfPkg/HypercallTestDxe/HypercallTestDxe.c	(revision 0)
++++ OvmfPkg/HypercallTestDxe/HypercallTestDxe.c	(revision 0)
+@@ -0,0 +1,149 @@
++/** @file
++  Xen PV test Dxe.
++
++  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++  This program and the accompanying materials                          
++  are licensed and made available under the terms and conditions of the BSD License         
++  which accompanies this distribution.  The full text of the license may be found at        
++  http://opensource.org/licenses/bsd-license.php                                            
++                                                                                          
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,                     
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.             
++
++**/
++
++#include "HypercallTestDxe.h"
++
++//
++// SMBIOS entry point structure
++//
++EFI_XEN_HV_PROTOCOL         *gXenHypercall;
++
++
++/**
++  Print String (For Hypercall test)
++**/
++INTN
++EFIAPI
++PrintAsciiStr (
++  IN      CONST CHAR8               *FirstString,
++  IN      UINTN                     Length
++  )
++{
++  ASSERT (AsciiStrSize (FirstString));
++
++  while ((*FirstString != '\0') && (Length > 0)) {
++    DEBUG ((EFI_D_INFO, "%c", *FirstString));
++    FirstString++;
++    Length--;
++  }
++
++  DEBUG ((EFI_D_INFO, "\n"));
++  return EFI_SUCCESS;
++}
++
++
++/**
++  Test Xen Hypercall. You can use hypercall in this function.
++
++**/
++EFI_STATUS
++EFIAPI
++HypercallTestFunc (
++  VOID
++  )
++{
++  EFI_STATUS         Status;
++  UINT32             Major, Minor;
++  XenExtraversion    ExtraVersion;
++
++  Major = 0; Minor = 0;
++  Minor = gXenHypercall->HypervisorXenVersion(XENVER_VERSION, 0);
++  Major = Minor >> 16;
++  Minor &= 0xFFFF;
++  DEBUG ((EFI_D_INFO, "[TestInfo_CallHypercallFromOtherDXE]OVMF is running on Xen version: %d.%d\n", Major, Minor));
++
++  Status = gXenHypercall->HypervisorXenVersion(XENVER_EXTRAVERSION, ExtraVersion);
++  ASSERT_EFI_ERROR (Status);
++  DEBUG ((EFI_D_INFO, "[TestInfo_CallHypercallFromOtherDXE]Detected Xen "));
++  PrintAsciiStr(ExtraVersion, 16);
++
++  return EFI_SUCCESS;
++}
++
++/**
++  Initialize the Xen Hypercall methods. Check if we are in Xen HVM firstly.
++
++  @retval EFI_SUCCESS    Smbios protocol installed
++  @retval Other          No protocol installed, unload driver.
++
++**/
++EFI_STATUS
++EFIAPI
++HypercallInitialize (
++  VOID
++  )
++{
++  EFI_STATUS                Status;
++  EFI_HOB_GUID_TYPE         *GuidHob;
++
++  //
++  // See if a XenInfo HOB is available
++  //
++  GuidHob = GetFirstGuidHob (&gEfiXenInfoGuid);
++  if (GuidHob == NULL) {
++    return EFI_NOT_FOUND;
++  }
++  //
++  // We are running inside Xen HVM. Then, find the Xen EFI_XEN_HV_PROTOCOL.
++  //
++  Status = gBS->LocateProtocol (
++                  &gEfiXenHvProtocolGuid,
++                  NULL,
++                  (VOID**)&gXenHypercall
++                  );
++  if (EFI_ERROR (Status)) {
++    return Status;
++  }
++  
++  return EFI_SUCCESS;
++}
++
++/**
++  Stub Dxe.
++
++  @param ImageHandle     Module's image handle
++  @param SystemTable     Pointer of EFI_SYSTEM_TABLE
++
++  @retval EFI_SUCCESS    Smbios protocol installed
++  @retval Other          No protocol installed, unload driver.
++
++**/
++EFI_STATUS
++EFIAPI
++XenParaVirtualizationTestEntry (
++  IN EFI_HANDLE           ImageHandle,
++  IN EFI_SYSTEM_TABLE     *SystemTable
++  )
++{
++  EFI_STATUS                Status;
++
++  //
++  // Initialize the Xen Hypercall.
++  //
++  Status = HypercallInitialize();
++  if (EFI_ERROR (Status)) {
++      DEBUG ((EFI_D_ERROR, "HVM hypercall initialization failed!\n"));
++      return Status;
++  }
++ 
++  //
++  // Other code here
++  //
++  HypercallTestFunc();
++
++
++  return EFI_SUCCESS;
++}
++
+Index: OvmfPkg/HypercallTestDxe/HypercallTestDxe.h
+===================================================================
+--- OvmfPkg/HypercallTestDxe/HypercallTestDxe.h	(revision 0)
++++ OvmfPkg/HypercallTestDxe/HypercallTestDxe.h	(revision 0)
+@@ -0,0 +1,32 @@
++/** @file
++  Xen PV test Dxe.
++
++  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++  This program and the accompanying materials                          
++  are licensed and made available under the terms and conditions of the BSD License         
++  which accompanies this distribution.  The full text of the license may be found at        
++  http://opensource.org/licenses/bsd-license.php                                            
++                                                                                          
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,                     
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.             
++
++**/
++
++#ifndef _HYPERCALL_TEST_DXE_H_
++#define _HYPERCALL_TEST_DXE_H_
++
++#include <PiDxe.h>
++
++#include <Protocol/Hypercall.h>
++#include <Guid/XenInfo.h>
++#include <Library/HobLib.h>
++#include <Library/DebugLib.h>
++#include <Library/UefiBootServicesTableLib.h>
++#include <Library/UefiDriverEntryPoint.h>
++#include <Library/XenLib.h>
++
++#include <Library/BaseLib.h>
++
++#endif
++

@@ -1,0 +1,1190 @@
+Index: OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.h
+===================================================================
+--- OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.h	(revision 0)
++++ OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.h	(revision 0)
+@@ -0,0 +1,58 @@
++/** @file
++
++Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++This program and the accompanying materials
++are licensed and made available under the terms and conditions of the BSD License
++which accompanies this distribution.  The full text of the license may be found at
++http://opensource.org/licenses/bsd-license.php
++
++THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#ifndef _PARA_VIRTUALIZATION_H_
++#define _PARA_VIRTUALIZATION_H_
++
++#include <PiDxe.h>
++
++#include <Protocol/Hypercall.h>
++#include <Guid/XenInfo.h>
++#include <Library/HobLib.h>
++#include <Library/DebugLib.h>
++#include <Library/UefiBootServicesTableLib.h>
++#include <Library/UefiDriverEntryPoint.h>
++#include <Library/XenLib.h>
++
++#include <Library/BaseLib.h>
++
++#include "GasketHypercall.h"
++
++/**
++  Get Xen Hypercall page from HOB.
++
++**/
++VOID*
++GetHypercallPage (
++  VOID
++  );
++
++/**
++  Xen Hypercall
++
++  @param  Cmd       parameter.
++  @param  Arg       Parameter.
++
++**/
++EFI_STATUS
++EFIAPI
++HypervisorXenVersion (
++  IN UINTN Cmd,
++  IN VOID  *Arg
++  );
++
++
++
++#endif
++
+Index: OvmfPkg/ParaVirtualizationDxe/X64/GasketHypercall.asm
+===================================================================
+Index: OvmfPkg/ParaVirtualizationDxe/X64/GasketHypercall.S
+===================================================================
+--- OvmfPkg/ParaVirtualizationDxe/X64/GasketHypercall.S	(revision 0)
++++ OvmfPkg/ParaVirtualizationDxe/X64/GasketHypercall.S	(revision 0)
+@@ -0,0 +1,93 @@
++#------------------------------------------------------------------------------
++#
++# Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++#
++# This program and the accompanying materials
++# are licensed and made available under the terms and conditions of the BSD License
++# which accompanies this distribution.  The full text of the license may be found at
++# http://opensource.org/licenses/bsd-license.php.
++#
++# THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++# WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++#
++# Module Name:
++#
++#   GasketHypercall.S
++#
++# Abstract:
++#
++#   Hypercall function
++#
++# Notes:
++#
++#------------------------------------------------------------------------------
++
++#------------------------------------------------------------------------------
++#  UINTN
++#  EFIAPI
++#  Hypercall (
++#    IN  VOID   *HypercallPageAddress,  // passed in %rcx
++#    IN  UINTN  HypercallOffset,        // passed in %rdx
++#    IN  UINTN  Arg1,                   // passed in %r8
++#    IN  UINTN  Arg2,                   // passed in %r9
++#    IN  UINTN  Arg3,                   // passed in stack
++#    IN  UINTN  Arg4,                   // passed in stack
++#    IN  UINTN  Arg5,                   // passed in stack
++#    )
++#------------------------------------------------------------------------------
++
++  .text
++
++ASM_GLOBAL ASM_PFX(Hypercall)
++ASM_PFX(Hypercall):
++  pushq   %rbp            // stack frame is for the debugger
++  movq    %rsp, %rbp
++  subq    $16, %rsp       // Allocate space for args on the stack
++
++  pushq   %rsi            // %rsi & %rdi are callee-save in EFI ABI
++  pushq   %rdi
++
++  movq    %rcx, %rax      // Swizzle args
++  addq    %rdx, %rax      // Address of hypercall is in %rax
++
++  movq    %r8,  %rdi      // Move parameters into %rdi,
++  movq    %r9,  %rsi      // %rsi,
++  movq    48(%rbp), %rdx  // %rdx,
++  movq    56(%rbp), %r10  // %r10,
++  movq    64(%rbp), %r8   // %r8
++  movq    %r8,     (%rsp) //
++
++  call    *%rax
++  addq    $16, %rsp
++
++  popq    %rdi            // restore state
++  popq    %rsi
++  popq    %rbp
++  ret                     // return value is in %rax
++
++
++//
++// Hypercall2 is not used.
++//
++ASM_GLOBAL ASM_PFX(Hypercall2)
++ASM_PFX(Hypercall2):
++  pushq   %rbp            // stack frame is for the debugger
++  movq    %rsp, %rbp
++
++  pushq   %rsi            // %rsi & %rdi are callee-save in EFI ABI
++  pushq   %rdi
++
++  movq    %rcx, %rax      // Swizzle args
++  addq    %rdx, %rax      // Address of hypercall is in %rax
++
++  movq    %r8,  %rdi      // Move parameters into %rdi, %rsi
++  movq    %r9,  %rsi
++
++  call    *%rax
++
++  popq    %rdi            // restore state
++  popq    %rsi
++  popq    %rbp
++  ret                     // return value is in %rax
++
++
+Index: OvmfPkg/ParaVirtualizationDxe/Hypercall.c
+===================================================================
+--- OvmfPkg/ParaVirtualizationDxe/Hypercall.c	(revision 0)
++++ OvmfPkg/ParaVirtualizationDxe/Hypercall.c	(revision 0)
+@@ -0,0 +1,58 @@
++/**@file
++  This file hold all the needed Xen Hypercalls
++
++  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++  This program and the accompanying materials
++  are licensed and made available under the terms and conditions of the BSD License
++  which accompanies this distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#include "ParaVirtualizationDxe.h"
++
++/**
++  Xen Hypercall
++
++  @param  Cmd       parameter.
++  @param  Arg       Parameter.
++
++**/
++EFI_STATUS
++EFIAPI
++HypervisorXenVersion (
++  IN UINTN Cmd,
++  IN VOID  *Arg
++  )
++{
++  VOID *HypercallPages;
++  UINTN tmp;
++
++  HypercallPages = GetHypercallPage ();
++  if (HypercallPages == NULL) {
++    return 0;
++  }
++
++  //
++  // All the hypercall just call one function.
++  //
++  tmp = Hypercall (HypercallPages, HYPERVISOR_XEN_VERSION * 32, (UINTN) Cmd, (UINTN) Arg, 0, 0, 0);
++
++  return tmp;  
++}
++
++
++
++
++
++
++
++/*
++  Add more hypercall here
++
++**/
++
+Index: OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.inf
+===================================================================
+--- OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.inf	(revision 0)
++++ OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.inf	(revision 0)
+@@ -0,0 +1,65 @@
++## @file
++#  Component description file for Xen ParaVirtualization driver module.
++#
++#  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++#
++#  This program and the accompanying materials
++#  are licensed and made available under the terms and conditions of the BSD License
++#  which accompanies this distribution. The full text of the license may be found at
++#  http://opensource.org/licenses/bsd-license.php
++#  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++#  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++#
++#
++##
++
++[Defines]
++  INF_VERSION                    = 0x00010005
++  BASE_NAME                      = ParaVirtualizationDxe
++  FILE_GUID                      = 0a5baf88-b6ec-4338-b1a7-f1496f605359
++  MODULE_TYPE                    = DXE_DRIVER
++  VERSION_STRING                 = 1.0
++
++  ENTRY_POINT                    = XenPvDriverEntryPoint
++
++#
++# The following information is for reference only and not required by the build tools.
++#
++#  VALID_ARCHITECTURES           = IA32 X64 IPF EBC
++#
++
++[Sources]
++  GasketHypercall.h
++  ParaVirtualizationDxe.h
++  ParaVirtualizationDxe.c
++  Hypercall.c
++
++[Sources.X64]
++  X64/GasketHypercall.S   # convert between Emu x86_64 ABI and EFI X64 ABI
++
++[Sources.IA32]
++  Ia32/GasketHypercall.S  #
++
++
++[Packages]
++  MdePkg/MdePkg.dec
++  OvmfPkg/OvmfPkg.dec
++
++[LibraryClasses]
++  UefiDriverEntryPoint
++  UefiBootServicesTableLib
++  DebugLib
++  HobLib
++
++  BaseLib
++
++[Protocols]
++  gEfiXenHvProtocolGuid                ## PRODUCED
++
++[Guids]
++  gEfiXenInfoGuid                      # PROTOCOL ALWAYS_CONSUMED
++
++[FixedPcd]
++
++[Depex]
++  TRUE
+Index: OvmfPkg/ParaVirtualizationDxe/GasketHypercall.h
+===================================================================
+--- OvmfPkg/ParaVirtualizationDxe/GasketHypercall.h	(revision 0)
++++ OvmfPkg/ParaVirtualizationDxe/GasketHypercall.h	(revision 0)
+@@ -0,0 +1,44 @@
++/** @file
++
++  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++  This program and the accompanying materials
++  are licensed and made available under the terms and conditions of the BSD License
++  which accompanies this distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#ifndef _GASKET_HYPERCALL_H_
++#define _GASKET_HYPERCALL_H_
++
++UINTN
++EFIAPI
++Hypercall (
++  IN  VOID   *HypercallPageAddress,  // Address of hypercall page
++  IN  UINTN  HypercallOffset,        // Hypercall Offset ( = hypercall num * 32)
++  IN  UINTN  Arg1,                   // parameters
++  IN  UINTN  Arg2,                   //
++  IN  UINTN  Arg3,                   //
++  IN  UINTN  Arg4,                   //
++  IN  UINTN  Arg5                    //
++  );
++
++
++//
++// Hypercall2 is not used!
++//
++UINTN
++EFIAPI
++Hypercall2 (
++  IN  VOID   *HypercallPageAddress,  // Address of hypercall page
++  IN  UINTN  HypercallOffset,        // Hypercall Offset ( = hypercall num * 32)
++  IN  UINTN  Arg1,                   // parameters
++  IN  UINTN  Arg2                    //
++  );
++
++#endif
++
+Index: OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.c
+===================================================================
+--- OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.c	(revision 0)
++++ OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.c	(revision 0)
+@@ -0,0 +1,224 @@
++/** @file
++
++Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++This program and the accompanying materials
++are licensed and made available under the terms and conditions of the BSD License
++which accompanies this distribution.  The full text of the license may be found at
++http://opensource.org/licenses/bsd-license.php
++
++THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#include "ParaVirtualizationDxe.h"
++
++//
++// Module Global:
++//
++EFI_HANDLE   mXenHypercallHandle = NULL;
++EFI_XEN_HV_PROTOCOL  mXenHypercallProtocol;
++
++
++/**
++
++  Get Xen Hypercall page from HOB.
++
++**/
++VOID*
++GetHypercallPage (
++  VOID
++  )
++{
++  EFI_PEI_HOB_POINTERS  GuidHob;
++  EFI_XEN_INFO          *mXenInfo;
++ 
++  GuidHob.Raw = GetFirstGuidHob (&gEfiXenInfoGuid);
++  if (GuidHob.Raw != NULL) {
++    mXenInfo = GET_GUID_HOB_DATA (GuidHob.Guid);
++    if (mXenInfo != NULL) {
++      return (VOID *) (UINTN) mXenInfo->HyperPages;
++    }
++  } 
++
++  DEBUG ((EFI_D_ERROR, "Gasket_Fail to get Xen info from hob\n"));
++  return NULL;
++}
++
++
++/**
++  Print String (For Hypercall test)
++**/
++INTN
++EFIAPI
++PrintAsciiStr (
++  IN      CONST CHAR8               *FirstString,
++  IN      UINTN                     Length
++  )
++{
++  ASSERT (AsciiStrSize (FirstString));
++
++  while ((*FirstString != '\0') && (Length > 0)) {
++    DEBUG ((EFI_D_INFO, "%c", *FirstString));
++    FirstString++;
++    Length--;
++  }
++
++  DEBUG ((EFI_D_INFO, "\n"));
++  return EFI_SUCCESS;
++}
++
++/**
++
++  Test of calling hypercall in OVMF
++
++**/
++VOID
++TestHypercall (
++  VOID
++  )
++{
++  UINT32           Major, Minor;
++  XenExtraversion  ExtraVersion;
++
++  //hypercall simple test
++  Major = 0; Minor = 0;
++  Minor = mXenHypercallProtocol.HypervisorXenVersion(XENVER_VERSION, 0);
++  Major = Minor >> 16;
++  Minor &= 0xFFFF;
++  DEBUG ((EFI_D_INFO, "[TestInfo_CallHypercallInsideXenPvDXE]OVMF is running on Xen version: %d.%d\n", Major, Minor));
++
++  //test2
++  mXenHypercallProtocol.HypervisorXenVersion(XENVER_EXTRAVERSION, ExtraVersion);
++  DEBUG ((EFI_D_INFO, "[TestInfo_CallHypercallInsideXenPvDXE]Detected Xen "));
++  PrintAsciiStr(ExtraVersion, 16);
++}
++
++/**
++
++  Initialize the methods of EFI_XEN_HV_PROTOCOL;
++
++  @param  XenProtocolInstance   Points to the EFI_XEN_HV_PROTOCOL instance.  
++
++**/
++EFI_STATUS
++EFIAPI
++ProtocolInitialize (
++  IN OUT EFI_XEN_HV_PROTOCOL     *XenProtocolInstance
++  )
++{
++  //
++  // Check for invalid input parameters
++  //
++  ASSERT (XenProtocolInstance);
++
++  //
++  // Initialize the protocol methods
++  //
++  XenProtocolInstance->HypervisorSetTrapTable     = NULL;
++  XenProtocolInstance->HypervisorMmuUpdate        = NULL;
++  XenProtocolInstance->HypervisorSetGdt           = NULL;
++  XenProtocolInstance->HypervisorStackSwitch      = NULL;
++  XenProtocolInstance->HypervisorSetCallbacks     = NULL;
++  XenProtocolInstance->HypervisorFpuTaskswitch    = NULL;
++  XenProtocolInstance->HypervisorSchedOpCompat    = NULL;
++  XenProtocolInstance->HypervisorPlatformOp       = NULL;
++  XenProtocolInstance->HypervisorSetDebugreg      = NULL;
++  XenProtocolInstance->HypervisorGetDebugreg      = NULL;
++  XenProtocolInstance->HypervisorUpdateDescriptor = NULL;
++  XenProtocolInstance->HypervisorMemoryOp         = NULL;
++  XenProtocolInstance->HypervisorMulticall        = NULL;
++  XenProtocolInstance->HypervisorUpdateVaMapping  = NULL;
++  XenProtocolInstance->HypervisorSetTimerOp       = NULL;
++  XenProtocolInstance->HypervisorEventChannelOpCompat = NULL;
++  XenProtocolInstance->HypervisorXenVersion       = HypervisorXenVersion;
++  XenProtocolInstance->HypervisorConsoleIo        = NULL;
++  XenProtocolInstance->HypervisorPhysdevOpCompat  = NULL;
++  XenProtocolInstance->HypervisorGrantTableOp     = NULL;
++  XenProtocolInstance->HypervisorVmAssist         = NULL;
++  XenProtocolInstance->HypervisorUpdateVaMappingOtherdomain = NULL;
++  XenProtocolInstance->HypervisorIret             = NULL;
++  XenProtocolInstance->HypervisorVcpuOp           = NULL;
++  XenProtocolInstance->HypervisorSetSegmentBase   = NULL;
++  XenProtocolInstance->HypervisorMmuextOp         = NULL;
++  XenProtocolInstance->HypervisorXsmOp            = NULL;
++  XenProtocolInstance->HypervisorNmiOp            = NULL;
++  XenProtocolInstance->HypervisorSchedOp          = NULL;
++  XenProtocolInstance->HypervisorCallbackOp       = NULL;
++  XenProtocolInstance->HypervisorXenoprofOp       = NULL;
++  XenProtocolInstance->HypervisorEventChannelOp   = NULL;
++  XenProtocolInstance->HypervisorPhysdevOp        = NULL;
++  XenProtocolInstance->HypervisorHvmOp            = NULL;
++  XenProtocolInstance->HypervisorSysctl           = NULL;
++  XenProtocolInstance->HypervisorDomctl           = NULL;
++  XenProtocolInstance->HypervisorKexecOp          = NULL;
++  XenProtocolInstance->HypervisorTmemOp           = NULL;
++
++  XenProtocolInstance->HypervisorArch0            = NULL;
++  XenProtocolInstance->HypervisorArch1            = NULL;
++  XenProtocolInstance->HypervisorArch2            = NULL;
++  XenProtocolInstance->HypervisorArch3            = NULL;
++  XenProtocolInstance->HypervisorArch4            = NULL;
++  XenProtocolInstance->HypervisorArch5            = NULL;
++  XenProtocolInstance->HypervisorArch6            = NULL;
++  XenProtocolInstance->HypervisorArch7            = NULL;
++  
++  //
++  // Initialize other info in protocol
++  // TODO: Set the version info 
++  //
++  XenProtocolInstance->MajorVersion  = 0;
++  XenProtocolInstance->MinorVersion  = 0;
++
++  return EFI_SUCCESS;
++}
++
++/**
++
++  Driver to produce EFI_XEN_HV_PROTOCOL protocol. 
++
++  @param ImageHandle     Module's image handle
++  @param SystemTable     Pointer of EFI_SYSTEM_TABLE
++
++  @retval EFI_SUCCESS    Smbios protocol installed
++  @retval Other          No protocol installed, unload driver.
++
++**/
++EFI_STATUS
++EFIAPI
++XenPvDriverEntryPoint (
++  IN EFI_HANDLE           ImageHandle,
++  IN EFI_SYSTEM_TABLE     *SystemTable
++  )
++{
++  EFI_STATUS            Status;
++
++  //
++  // Make sure the Xen ParaVirtualization Protocol has not been installed in the system yet.
++  //
++  ASSERT_PROTOCOL_ALREADY_INSTALLED (NULL, &gEfiXenHvProtocolGuid);
++
++  //
++  // Initialize protocol
++  //
++  ProtocolInitialize(&mXenHypercallProtocol);
++
++  //
++  // Test inside Xen PV driver Dxe
++  //
++  TestHypercall();
++
++  //
++  // Make a new handle and install the protocol
++  //
++  Status = gBS->InstallMultipleProtocolInterfaces (
++                  &mXenHypercallHandle,
++                  &gEfiXenHvProtocolGuid, &mXenHypercallProtocol,
++                  NULL
++                  );
++  ASSERT_EFI_ERROR (Status);
++
++  return Status;
++}
++
+Index: OvmfPkg/ParaVirtualizationDxe/Ia32/GasketHypercall.asm
+===================================================================
+Index: OvmfPkg/ParaVirtualizationDxe/Ia32/GasketHypercall.S
+===================================================================
+--- OvmfPkg/ParaVirtualizationDxe/Ia32/GasketHypercall.S	(revision 0)
++++ OvmfPkg/ParaVirtualizationDxe/Ia32/GasketHypercall.S	(revision 0)
+@@ -0,0 +1,96 @@
++#------------------------------------------------------------------------------
++#
++# Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++#
++# This program and the accompanying materials
++# are licensed and made available under the terms and conditions of the BSD License
++# which accompanies this distribution.  The full text of the license may be found at
++# http://opensource.org/licenses/bsd-license.php.
++#
++# THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++# WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++#
++# Module Name:
++#
++#   GasketHypercall.S
++#
++# Abstract:
++#
++#   Hypercall function
++#
++# Notes:
++#
++#------------------------------------------------------------------------------
++
++#------------------------------------------------------------------------------
++#  UINTN
++#  EFIAPI
++#  Hypercall (
++#    IN  VOID   *HypercallPageAddress,  // passed in stack 8(%ebp)
++#    IN  UINTN  HypercallOffset,        // passed in stack 12(%ebp)
++#    IN  UINTN  Arg1,                   // passed in stack 16(%ebp)
++#    IN  UINTN  Arg2,                   // passed in stack 20(%ebp)
++#    IN  UINTN  Arg3,                   // passed in stack 24(%ebp)
++#    IN  UINTN  Arg4,                   // passed in stack 28(%ebp)
++#    IN  UINTN  Arg5,                   // passed in stack 32(%ebp)
++#    )
++#------------------------------------------------------------------------------
++
++  .text
++
++ASM_GLOBAL ASM_PFX(Hypercall)
++ASM_PFX(Hypercall):
++  pushl %ebp
++  movl  %esp, %ebp
++
++  pushl %ebx
++  pushl %ecx
++  pushl %edx
++  pushl %esi
++  pushl %edi  
++
++  movl 8(%ebp), %eax     // Address of hypercall page
++  addl 12(%ebp), %eax    // Address of hypercall is in %rax
++
++  movl 32(%ebp), %edi    // Swizzle args
++  movl 28(%ebp), %esi
++  movl 24(%ebp), %edx
++  movl 20(%ebp), %ecx
++  movl 16(%ebp), %ebx
++
++  call  *%eax
++
++  popl %edi
++  popl %esi
++  popl %edx
++  popl %ecx
++  popl %ebx
++
++  movl %ebp, %esp
++  popl %ebp
++  ret
++
++
++//
++// Hypercall2 is not used.
++//
++ASM_GLOBAL ASM_PFX(Hypercall2)
++ASM_PFX(Hypercall2):
++  pushl	%ebp
++  movl	%esp, %ebp
++
++  pushl %ecx
++
++  movl 8(%ebp), %eax     // Address of hypercall page
++  addl 12(%ebp), %eax    // Address of hypercall is in %rax
++
++  movl 20(%ebp), %ecx    // Swizzle args
++  movl 16(%ebp), %ebx
++ 
++  call *%eax
++
++  popl %ecx
++  movl %ebp, %esp
++  popl %ebp
++  ret
++
+Index: OvmfPkg/Include/Library/XenLib.h
+===================================================================
+--- OvmfPkg/Include/Library/XenLib.h	(revision 0)
++++ OvmfPkg/Include/Library/XenLib.h	(revision 0)
+@@ -0,0 +1,46 @@
++/** @file
++
++  XEN_HV_PROTOCOL protocol allows consumers to log SMBIOS data records, and enables the producer 
++  to create the SMBIOS tables for a platform.
++
++  This protocol provides an interface to add, remove or discover SMBIOS records. The driver which
++  produces this protocol is responsible for creating the SMBIOS data tables and installing the pointer
++  to the tables in the EFI System Configuration Table.
++  The caller is responsible for only adding SMBIOS records that are valid for the SMBIOS
++  MajorVersion and MinorVersion. When an enumerated SMBIOS field's values are
++  controlled by the DMTF, new values can be used as soon as they are defined by the DMTF without
++  requiring an update to MajorVersion and MinorVersion.
++  The SMBIOS protocol can only be called a TPL < TPL_NOTIFY.
++
++  Copyright (c) 2006 - 2008, Intel Corporation. All rights reserved.<BR>
++  This program and the accompanying materials                          
++  are licensed and made available under the terms and conditions of the BSD License         
++  which accompanies this distribution.  The full text of the license may be found at        
++  http://opensource.org/licenses/bsd-license.php                                            
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,                     
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.             
++
++**/
++
++#ifndef _XEN_LIB_H_
++#define _XEN_LIB_H_
++
++
++/*
++* For Xen Version Hypercall
++*/
++#define XENVER_VERSION         0
++/* arg == xen_extraversion_t. */
++#define XENVER_EXTRAVERSION    1
++typedef CHAR8 XenExtraversion[16];
++
++
++
++
++
++
++
++
++#endif
++
+Index: OvmfPkg/Include/Protocol/Hypercall.h
+===================================================================
+--- OvmfPkg/Include/Protocol/Hypercall.h	(revision 0)
++++ OvmfPkg/Include/Protocol/Hypercall.h	(revision 0)
+@@ -0,0 +1,441 @@
++/** @file
++
++  XEN_HV_PROTOCOL protocol allows consumers to log SMBIOS data records, and enables the producer 
++  to create the SMBIOS tables for a platform.
++
++  This protocol provides an interface to add, remove or discover SMBIOS records. The driver which
++  produces this protocol is responsible for creating the SMBIOS data tables and installing the pointer
++  to the tables in the EFI System Configuration Table.
++  The caller is responsible for only adding SMBIOS records that are valid for the SMBIOS
++  MajorVersion and MinorVersion. When an enumerated SMBIOS field's values are
++  controlled by the DMTF, new values can be used as soon as they are defined by the DMTF without
++  requiring an update to MajorVersion and MinorVersion.
++  The SMBIOS protocol can only be called a TPL < TPL_NOTIFY.
++
++  Copyright (c) 2006 - 2008, Intel Corporation. All rights reserved.<BR>
++  This program and the accompanying materials                          
++  are licensed and made available under the terms and conditions of the BSD License         
++  which accompanies this distribution.  The full text of the license may be found at        
++  http://opensource.org/licenses/bsd-license.php                                            
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,                     
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.             
++
++**/
++
++#ifndef _XEN_HV_PROTOCOL_H_
++#define _XEN_HV_PROTOCOL_H_
++
++#define EFI_XEN_HV_PROTOCOL_GUID \
++    { 0x90d9933f, 0x0f3f, 0x4027, { 0xaa, 0x7c, 0x05, 0x44, 0xb6, 0x62, 0x38, 0x5f }}
++
++//
++// HYPERCALLS
++//
++#define HYPERVISOR_SET_TRAP_TABLE        0
++#define HYPERVISOR_MMU_UPDATE            1
++#define HYPERVISOR_SET_GDT               2
++#define HYPERVISOR_STACK_SWITCH          3
++#define HYPERVISOR_SET_CALLBACKS         4
++#define HYPERVISOR_FPU_TASKSWITCH        5
++#define HYPERVISOR_SCHED_OP_COMPAT       6 /* compat since 0x00030101 */
++#define HYPERVISOR_PLATFORM_OP           7
++#define HYPERVISOR_SET_DEBUGREG          8
++#define HYPERVISOR_GET_DEBUGREG          9
++#define HYPERVISOR_UPDATE_DESCRIPTOR    10
++#define HYPERVISOR_MEMORY_OP            12
++#define HYPERVISOR_MULTICALL            13
++#define HYPERVISOR_UPDATE_VA_MAPPING    14
++#define HYPERVISOR_SET_TIMER_OP         15
++#define HYPERVISOR_EVENT_CHANNEL_OP_COMPAT 16 /* compat since 0x00030202 */
++#define HYPERVISOR_XEN_VERSION          17
++#define HYPERVISOR_CONSOLE_IO           18
++#define HYPERVISOR_PHYSDEV_OP_COMPAT    19 /* compat since 0x00030202 */
++#define HYPERVISOR_GRANT_TABLE_OP       20
++#define HYPERVISOR_VM_ASSIST            21
++#define HYPERVISOR_UPDATE_VA_MAPPING_OTHERDOMAIN 22
++#define HYPERVISOR_IRET                 23 /* x86 only */
++#define HYPERVISOR_VCPU_OP              24
++#define HYPERVISOR_SET_SEGMENT_BASE     25 /* x86/64 only */
++#define HYPERVISOR_MMUEXT_OP            26
++#define HYPERVISOR_XSM_OP               27
++#define HYPERVISOR_NMI_OP               28
++#define HYPERVISOR_SCHED_OP             29
++#define HYPERVISOR_CALLBACK_OP          30
++#define HYPERVISOR_XENOPROF_OP          31
++#define HYPERVISOR_EVENT_CHANNEL_OP     32
++#define HYPERVISOR_PHYSDEV_OP           33
++#define HYPERVISOR_HVM_OP               34
++#define HYPERVISOR_SYSCTL               35
++#define HYPERVISOR_DOMCTL               36
++#define HYPERVISOR_KEXEC_OP             37
++#define HYPERVISOR_TMEM_OP              38
++
++/* Architecture-specific hypercall definitions. */
++#define HYPERVISOR_ARCH_0               48
++#define HYPERVISOR_ARCH_1               49
++#define HYPERVISOR_ARCH_2               50
++#define HYPERVISOR_ARCH_3               51
++#define HYPERVISOR_ARCH_4               52
++#define HYPERVISOR_ARCH_5               53
++#define HYPERVISOR_ARCH_6               54
++#define HYPERVISOR_ARCH_7               55
++
++typedef struct _EFI_XEN_HV_PROTOCOL EFI_XEN_HV_PROTOCOL;
++
++/**
++  Hypercall methods.
++
++  @param[in]    TODO parameters description
++  @param[in]    TODO parameters description
++
++**/
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_SET_TRAP_TABLE)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_MMU_UPDATE )(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_SET_GDT)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_STACK_SWITCH)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_SET_CALLBACKS)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_FPU_TASKSWITCH)(
++  IN UINTN      Cmd
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_SCHED_OP_COMPAT)(
++  IN UINTN      Cmd,
++  IN VOID       *Arg
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_PLATFORM_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_SET_DEBUGREG)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_GET_DEBUGREG)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_UPDATE_DESCRIPTOR)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_MEMORY_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_MULTICALL)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_UPDATE_VA_MAPPING)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_SET_TIMER_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_EVENT_CHANNEL_OP_COMPAT)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_XEN_VERSION)(
++  IN UINTN      Cmd,
++  IN VOID       *Arg
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_CONSOLE_IO)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_PHYSDEV_OP_COMPAT)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_GRANT_TABLE_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_VM_ASSIST)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_UPDATE_VA_MAPPING_OTHERDOMAIN)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_IRET)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_VCPU_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_SET_SEGMENT_BASE)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_MMUEXT_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_XSM_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_NMI_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_SCHED_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_CALLBACK_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_XENOPROF_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_EVENT_CHANNEL_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_PHYSDEV_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_HVM_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_SYSCTL)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_DOMCTL)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_KEXEC_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_TMEM_OP)(
++  //TODO Add parameters
++);
++
++//
++// Architecture-specific hypercall definitions.
++//
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_ARCH_0)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_ARCH_1)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_ARCH_2)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_ARCH_3)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_ARCH_4)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_ARCH_5)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_ARCH_6)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_ARCH_7)(
++  //TODO Add parameters
++);
++
++
++struct _EFI_XEN_HV_PROTOCOL {
++  ///
++  /// Protocol methods are hypercalls
++  ///
++
++  EFI_HYPERVISOR_SET_TRAP_TABLE        HypervisorSetTrapTable;
++  EFI_HYPERVISOR_MMU_UPDATE            HypervisorMmuUpdate;
++  EFI_HYPERVISOR_SET_GDT               HypervisorSetGdt;
++  EFI_HYPERVISOR_STACK_SWITCH          HypervisorStackSwitch;
++  EFI_HYPERVISOR_SET_CALLBACKS         HypervisorSetCallbacks;
++  EFI_HYPERVISOR_FPU_TASKSWITCH        HypervisorFpuTaskswitch;
++  EFI_HYPERVISOR_SCHED_OP_COMPAT       HypervisorSchedOpCompat;
++  EFI_HYPERVISOR_PLATFORM_OP           HypervisorPlatformOp;
++  EFI_HYPERVISOR_SET_DEBUGREG          HypervisorSetDebugreg;
++  EFI_HYPERVISOR_GET_DEBUGREG          HypervisorGetDebugreg;
++  EFI_HYPERVISOR_UPDATE_DESCRIPTOR     HypervisorUpdateDescriptor;
++  EFI_HYPERVISOR_MEMORY_OP             HypervisorMemoryOp;
++  EFI_HYPERVISOR_MULTICALL             HypervisorMulticall;
++  EFI_HYPERVISOR_UPDATE_VA_MAPPING     HypervisorUpdateVaMapping;
++  EFI_HYPERVISOR_SET_TIMER_OP          HypervisorSetTimerOp;
++  EFI_HYPERVISOR_EVENT_CHANNEL_OP_COMPAT HypervisorEventChannelOpCompat;
++  EFI_HYPERVISOR_XEN_VERSION           HypervisorXenVersion;
++  EFI_HYPERVISOR_CONSOLE_IO            HypervisorConsoleIo;
++  EFI_HYPERVISOR_PHYSDEV_OP_COMPAT     HypervisorPhysdevOpCompat;
++  EFI_HYPERVISOR_GRANT_TABLE_OP        HypervisorGrantTableOp;
++  EFI_HYPERVISOR_VM_ASSIST             HypervisorVmAssist;
++  EFI_HYPERVISOR_UPDATE_VA_MAPPING_OTHERDOMAIN HypervisorUpdateVaMappingOtherdomain;
++  EFI_HYPERVISOR_IRET                  HypervisorIret;
++  EFI_HYPERVISOR_VCPU_OP               HypervisorVcpuOp;
++  EFI_HYPERVISOR_SET_SEGMENT_BASE      HypervisorSetSegmentBase;
++  EFI_HYPERVISOR_MMUEXT_OP             HypervisorMmuextOp;
++  EFI_HYPERVISOR_XSM_OP                HypervisorXsmOp;
++  EFI_HYPERVISOR_NMI_OP                HypervisorNmiOp;
++  EFI_HYPERVISOR_SCHED_OP              HypervisorSchedOp;
++  EFI_HYPERVISOR_CALLBACK_OP           HypervisorCallbackOp;
++  EFI_HYPERVISOR_XENOPROF_OP           HypervisorXenoprofOp;
++  EFI_HYPERVISOR_EVENT_CHANNEL_OP      HypervisorEventChannelOp;
++  EFI_HYPERVISOR_PHYSDEV_OP            HypervisorPhysdevOp;
++  EFI_HYPERVISOR_HVM_OP                HypervisorHvmOp;
++  EFI_HYPERVISOR_SYSCTL                HypervisorSysctl;
++  EFI_HYPERVISOR_DOMCTL                HypervisorDomctl;
++  EFI_HYPERVISOR_KEXEC_OP              HypervisorKexecOp;
++  EFI_HYPERVISOR_TMEM_OP               HypervisorTmemOp;
++
++  EFI_HYPERVISOR_ARCH_0                HypervisorArch0;
++  EFI_HYPERVISOR_ARCH_1                HypervisorArch1;
++  EFI_HYPERVISOR_ARCH_2                HypervisorArch2;
++  EFI_HYPERVISOR_ARCH_3                HypervisorArch3;
++  EFI_HYPERVISOR_ARCH_4                HypervisorArch4;
++  EFI_HYPERVISOR_ARCH_5                HypervisorArch5;
++  EFI_HYPERVISOR_ARCH_6                HypervisorArch6;
++  EFI_HYPERVISOR_ARCH_7                HypervisorArch7;
++
++  ///
++  /// Hypervisor major version.
++  ///
++  UINT16 MajorVersion;
++  ///
++  /// Hypervisor minor version.
++  ///
++  UINT16 MinorVersion;
++};
++
++extern EFI_GUID gEfiXenHvProtocolGuid;
++
++#endif // _XEN_HV_PROTOCOL_H_
++
+Index: OvmfPkg/OvmfPkg.dec
+===================================================================
+--- OvmfPkg/OvmfPkg.dec	(revision 12056)
++++ OvmfPkg/OvmfPkg.dec	(working copy)
+@@ -33,9 +33,11 @@
+ 
+ [Guids]
+   gUefiOvmfPkgTokenSpaceGuid      = {0x93bb96af, 0xb9f2, 0x4eb8, {0x94, 0x62, 0xe0, 0xba, 0x74, 0x56, 0x42, 0x36}}
++  gEfiXenInfoGuid                 = {0xd3b46f3b, 0xd441, 0x1244, {0x9a, 0x12, 0x0, 0x12, 0x27, 0x3f, 0xc1, 0x4d}}
+ 
+ [Protocols]
+   gBlockMmioProtocolGuid          = {0x6b558ce3, 0x69e5, 0x4c67, {0xa6, 0x34, 0xf7, 0xfe, 0x72, 0xad, 0xbe, 0x84}}
++  gEfiXenHvProtocolGuid           = {0x90d9933f, 0x0f3f, 0x4027, {0xaa, 0x7c, 0x05, 0x44, 0xb6, 0x62, 0x38, 0x5f}}
+ 
+ [PcdsFixedAtBuild]
+   gUefiOvmfPkgTokenSpaceGuid.PcdOvmfMemFvBase|0x0|UINT32|0
