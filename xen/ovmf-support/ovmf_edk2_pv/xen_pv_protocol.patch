@@ -2,7 +2,7 @@ Index: OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.h
 ===================================================================
 --- OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.h	(revision 0)
 +++ OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.h	(revision 0)
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,92 @@
 +/** @file
 +
 +Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
@@ -46,6 +46,11 @@ Index: OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.h
 +/**
 +  Xen Hypercall
 +
++**/
++
++/**
++  Xen Hypercall
++
 +  @param  Cmd       parameter.
 +  @param  Arg       Parameter.
 +
@@ -53,6 +58,35 @@ Index: OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.h
 +EFI_STATUS
 +EFIAPI
 +HypervisorXenVersion (
++  IN UINTN Cmd,
++  IN VOID  *Arg
++  );
++
++EFI_STATUS
++EFIAPI
++HypervisorGrantTableOp(
++  IN UINTN      Cmd,
++  IN VOID       *Uop,
++  IN UINTN      Count
++);
++
++EFI_STATUS
++EFIAPI
++HypervisorSchedOp (
++  IN UINTN      Cmd,
++  IN VOID       *Arg
++  );
++
++EFI_STATUS
++EFIAPI
++HypervisorEventChannelOp (
++  IN UINTN Cmd,
++  IN VOID  *Arg
++  );
++
++EFI_STATUS
++EFIAPI
++HypervisorHvmOp (
 +  IN UINTN Cmd,
 +  IN VOID  *Arg
 +  );
@@ -165,9 +199,9 @@ Index: OvmfPkg/ParaVirtualizationDxe/Hypercall.c
 ===================================================================
 --- OvmfPkg/ParaVirtualizationDxe/Hypercall.c	(revision 0)
 +++ OvmfPkg/ParaVirtualizationDxe/Hypercall.c	(revision 0)
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,112 @@
 +/**@file
-+  This file hold all the needed Xen Hypercalls
++  This file holds all the needed Xen Hypercalls.
 +
 +  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
 +
@@ -184,7 +218,38 @@ Index: OvmfPkg/ParaVirtualizationDxe/Hypercall.c
 +#include "ParaVirtualizationDxe.h"
 +
 +/**
-+  Xen Hypercall
++  This method passes the hypercall parameters and hypercall number to UNIX ABI function, as well as the address of hypercall page.
++
++  @param  HypercallNum    The Number of the hypercall.
++  @param  Arg1-Arg5       Parameters for the hypercall.
++
++**/
++EFI_STATUS
++EFIAPI
++Hypercall2Abi (
++  IN  UINTN  HypercallNum,
++  IN  UINTN  Arg1,
++  IN  UINTN  Arg2,
++  IN  UINTN  Arg3,
++  IN  UINTN  Arg4,
++  IN  UINTN  Arg5
++  )
++{
++  VOID *HypercallPages;
++
++  HypercallPages = GetHypercallPage ();
++  if (HypercallPages == NULL) {
++    return 0;
++  }
++
++  //
++  // All the hypercall just call one function.
++  //
++  return Hypercall (HypercallPages, HypercallNum * 32, Arg1, Arg2, Arg3, Arg4, Arg5);
++}
++
++/**
++  Xen Hypercall. All the hypercalls call one function.
 +
 +  @param  Cmd       parameter.
 +  @param  Arg       Parameter.
@@ -197,26 +262,49 @@ Index: OvmfPkg/ParaVirtualizationDxe/Hypercall.c
 +  IN VOID  *Arg
 +  )
 +{
-+  VOID *HypercallPages;
-+  UINTN tmp;
-+
-+  HypercallPages = GetHypercallPage ();
-+  if (HypercallPages == NULL) {
-+    return 0;
-+  }
-+
-+  //
-+  // All the hypercall just call one function.
-+  //
-+  tmp = Hypercall (HypercallPages, HYPERVISOR_XEN_VERSION * 32, (UINTN) Cmd, (UINTN) Arg, 0, 0, 0);
-+
-+  return tmp;  
++  return Hypercall2Abi (HYPERVISOR_XEN_VERSION, (UINTN) Cmd, (UINTN) Arg, 0, 0, 0);
 +}
 +
++EFI_STATUS
++EFIAPI
++HypervisorGrantTableOp(
++  IN UINTN      Cmd,
++  IN VOID       *Uop,
++  IN UINTN      Count
++)
++{
++  return Hypercall2Abi (HYPERVISOR_GRANT_TABLE_OP, (UINTN) Cmd, (UINTN) Uop, Count, 0, 0);
++}
 +
++EFI_STATUS
++EFIAPI
++HypervisorSchedOp (
++  IN UINTN      Cmd,
++  IN VOID       *Arg
++  )
++{
++  return Hypercall2Abi(HYPERVISOR_SCHED_OP, (UINTN) Cmd, (UINTN) Arg, 0, 0, 0);
++}
 +
++EFI_STATUS
++EFIAPI
++HypervisorEventChannelOp (
++  IN UINTN Cmd,
++  IN VOID  *Arg
++  )
++{
++  return Hypercall2Abi(HYPERVISOR_EVENT_CHANNEL_OP, (UINTN) Cmd, (UINTN) Arg, 0, 0, 0);
++}
 +
-+
++EFI_STATUS
++EFIAPI
++HypervisorHvmOp (
++  IN UINTN Cmd,
++  IN VOID  *Arg
++  )
++{
++  return Hypercall2Abi (HYPERVISOR_HVM_OP, (UINTN) Cmd, (UINTN) Arg, 0, 0, 0);
++}
 +
 +
 +/*
@@ -485,7 +573,7 @@ Index: OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.c
 +  XenProtocolInstance->HypervisorXenVersion       = HypervisorXenVersion;
 +  XenProtocolInstance->HypervisorConsoleIo        = NULL;
 +  XenProtocolInstance->HypervisorPhysdevOpCompat  = NULL;
-+  XenProtocolInstance->HypervisorGrantTableOp     = NULL;
++  XenProtocolInstance->HypervisorGrantTableOp     = HypervisorGrantTableOp;
 +  XenProtocolInstance->HypervisorVmAssist         = NULL;
 +  XenProtocolInstance->HypervisorUpdateVaMappingOtherdomain = NULL;
 +  XenProtocolInstance->HypervisorIret             = NULL;
@@ -494,12 +582,12 @@ Index: OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.c
 +  XenProtocolInstance->HypervisorMmuextOp         = NULL;
 +  XenProtocolInstance->HypervisorXsmOp            = NULL;
 +  XenProtocolInstance->HypervisorNmiOp            = NULL;
-+  XenProtocolInstance->HypervisorSchedOp          = NULL;
++  XenProtocolInstance->HypervisorSchedOp          = HypervisorSchedOp;
 +  XenProtocolInstance->HypervisorCallbackOp       = NULL;
 +  XenProtocolInstance->HypervisorXenoprofOp       = NULL;
-+  XenProtocolInstance->HypervisorEventChannelOp   = NULL;
++  XenProtocolInstance->HypervisorEventChannelOp   = HypervisorEventChannelOp;
 +  XenProtocolInstance->HypervisorPhysdevOp        = NULL;
-+  XenProtocolInstance->HypervisorHvmOp            = NULL;
++  XenProtocolInstance->HypervisorHvmOp            = HypervisorHvmOp;
 +  XenProtocolInstance->HypervisorSysctl           = NULL;
 +  XenProtocolInstance->HypervisorDomctl           = NULL;
 +  XenProtocolInstance->HypervisorKexecOp          = NULL;
@@ -679,20 +767,11 @@ Index: OvmfPkg/Include/Library/XenLib.h
 ===================================================================
 --- OvmfPkg/Include/Library/XenLib.h	(revision 0)
 +++ OvmfPkg/Include/Library/XenLib.h	(revision 0)
-@@ -0,0 +1,46 @@
+@@ -0,0 +1,37 @@
 +/** @file
 +
 +  XEN_HV_PROTOCOL protocol allows consumers to log SMBIOS data records, and enables the producer 
 +  to create the SMBIOS tables for a platform.
-+
-+  This protocol provides an interface to add, remove or discover SMBIOS records. The driver which
-+  produces this protocol is responsible for creating the SMBIOS data tables and installing the pointer
-+  to the tables in the EFI System Configuration Table.
-+  The caller is responsible for only adding SMBIOS records that are valid for the SMBIOS
-+  MajorVersion and MinorVersion. When an enumerated SMBIOS field's values are
-+  controlled by the DMTF, new values can be used as soon as they are defined by the DMTF without
-+  requiring an update to MajorVersion and MinorVersion.
-+  The SMBIOS protocol can only be called a TPL < TPL_NOTIFY.
 +
 +  Copyright (c) 2006 - 2008, Intel Corporation. All rights reserved.<BR>
 +  This program and the accompanying materials                          
@@ -730,20 +809,11 @@ Index: OvmfPkg/Include/Protocol/Hypercall.h
 ===================================================================
 --- OvmfPkg/Include/Protocol/Hypercall.h	(revision 0)
 +++ OvmfPkg/Include/Protocol/Hypercall.h	(revision 0)
-@@ -0,0 +1,441 @@
+@@ -0,0 +1,436 @@
 +/** @file
 +
 +  XEN_HV_PROTOCOL protocol allows consumers to log SMBIOS data records, and enables the producer 
 +  to create the SMBIOS tables for a platform.
-+
-+  This protocol provides an interface to add, remove or discover SMBIOS records. The driver which
-+  produces this protocol is responsible for creating the SMBIOS data tables and installing the pointer
-+  to the tables in the EFI System Configuration Table.
-+  The caller is responsible for only adding SMBIOS records that are valid for the SMBIOS
-+  MajorVersion and MinorVersion. When an enumerated SMBIOS field's values are
-+  controlled by the DMTF, new values can be used as soon as they are defined by the DMTF without
-+  requiring an update to MajorVersion and MinorVersion.
-+  The SMBIOS protocol can only be called a TPL < TPL_NOTIFY.
 +
 +  Copyright (c) 2006 - 2008, Intel Corporation. All rights reserved.<BR>
 +  This program and the accompanying materials                          
@@ -862,8 +932,7 @@ Index: OvmfPkg/Include/Protocol/Hypercall.h
 +typedef
 +EFI_STATUS
 +(EFIAPI *EFI_HYPERVISOR_SCHED_OP_COMPAT)(
-+  IN UINTN      Cmd,
-+  IN VOID       *Arg
++  //TODO Add parameters
 +);
 +
 +typedef
@@ -942,7 +1011,9 @@ Index: OvmfPkg/Include/Protocol/Hypercall.h
 +typedef
 +EFI_STATUS
 +(EFIAPI *EFI_HYPERVISOR_GRANT_TABLE_OP)(
-+  //TODO Add parameters
++  IN UINTN      Cmd,
++  IN VOID       *Uop,
++  IN UINTN      Count
 +);
 +
 +typedef
@@ -996,7 +1067,8 @@ Index: OvmfPkg/Include/Protocol/Hypercall.h
 +typedef
 +EFI_STATUS
 +(EFIAPI *EFI_HYPERVISOR_SCHED_OP)(
-+  //TODO Add parameters
++  IN UINTN      Cmd,
++  IN VOID       *Arg
 +);
 +
 +typedef
@@ -1014,7 +1086,8 @@ Index: OvmfPkg/Include/Protocol/Hypercall.h
 +typedef
 +EFI_STATUS
 +(EFIAPI *EFI_HYPERVISOR_EVENT_CHANNEL_OP)(
-+  //TODO Add parameters
++  IN UINTN      Cmd,
++  IN VOID       *Arg
 +);
 +
 +typedef
@@ -1026,7 +1099,8 @@ Index: OvmfPkg/Include/Protocol/Hypercall.h
 +typedef
 +EFI_STATUS
 +(EFIAPI *EFI_HYPERVISOR_HVM_OP)(
-+  //TODO Add parameters
++  IN UINTN      Cmd,
++  IN VOID       *Arg
 +);
 +
 +typedef
@@ -1180,7 +1254,7 @@ Index: OvmfPkg/OvmfPkg.dec
  
  [Guids]
    gUefiOvmfPkgTokenSpaceGuid      = {0x93bb96af, 0xb9f2, 0x4eb8, {0x94, 0x62, 0xe0, 0xba, 0x74, 0x56, 0x42, 0x36}}
-+  gEfiXenInfoGuid                 = {0xd3b46f3b, 0xd441, 0x1244, {0x9a, 0x12, 0x0, 0x12, 0x27, 0x3f, 0xc1, 0x4d}}
++  gEfiXenInfoGuid                 = {0xd3b46f3b, 0xd441, 0x1244, {0x9a, 0x12, 0x01, 0x12, 0x27, 0x3f, 0xc1, 0x4d}}
  
  [Protocols]
    gBlockMmioProtocolGuid          = {0x6b558ce3, 0x69e5, 0x4c67, {0xa6, 0x34, 0xf7, 0xfe, 0x72, 0xad, 0xbe, 0x84}}
