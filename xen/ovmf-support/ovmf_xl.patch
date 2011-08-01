@@ -1,0 +1,79 @@
+# HG changeset patch
+# User gbtju85@gmail.com
+#
+
+Xen: Expose hvmloader/bios in libxl.
+
+Exposes the hvmloader/bios xenstore key in libxl, so firmware loaded 
+can be overriden (choices: rombios, seabios, ovmf-ia32, ovmf-x64).
+
+Sign-off-by: Bei Guan <gbtju85@gmail.com>
+
+diff -r 42edf1481c57 tools/libxl/libxl.idl
+--- a/tools/libxl/libxl.idl	Fri Jul 22 08:55:19 2011 +0100
++++ b/tools/libxl/libxl.idl	Sat Jul 30 16:58:27 2011 +0800
+@@ -137,6 +137,7 @@
+ 
+ libxl_domain_create_info = Struct("domain_create_info",[
+     ("type",         libxl_domain_type),
++    ("hvmbios",      string),
+     ("hap",          bool),
+     ("oos",          bool),
+     ("ssidref",      uint32),
+diff -r 42edf1481c57 tools/libxl/libxl_create.c
+--- a/tools/libxl/libxl_create.c	Fri Jul 22 08:55:19 2011 +0100
++++ b/tools/libxl/libxl_create.c	Sat Jul 30 16:58:27 2011 +0800
+@@ -407,6 +407,10 @@
+     if (info->poolname)
+         xs_write(ctx->xsh, t, libxl__sprintf(gc, "%s/pool_name", vm_path), info->poolname, strlen(info->poolname));
+ 
++    if (info->hvmbios){
++        xs_write(ctx->xsh, t, libxl__sprintf(gc, "%s/hvmloader/bios", dom_path), info->hvmbios, strlen(info->hvmbios));
++    }
++
+     libxl__xs_writev(gc, t, dom_path, info->xsdata);
+     libxl__xs_writev(gc, t, libxl__sprintf(gc, "%s/platform", dom_path), info->platformdata);
+ 
+diff -r 42edf1481c57 tools/libxl/libxl_dm.c
+--- a/tools/libxl/libxl_dm.c	Fri Jul 22 08:55:19 2011 +0100
++++ b/tools/libxl/libxl_dm.c	Sat Jul 30 16:58:27 2011 +0800
+@@ -804,6 +804,7 @@
+     char *vm_path;
+     char **pass_stuff;
+     const char *dm;
++    char *custom_bios;
+ 
+     if (info->device_model_stubdomain) {
+         libxl_device_vfb vfb;
+@@ -835,10 +836,13 @@
+         goto out;
+     }
+ 
+-    path = libxl__sprintf(gc, "/local/domain/%d/hvmloader", info->domid);
+-    xs_mkdir(ctx->xsh, XBT_NULL, path);
+-    libxl__xs_write(gc, XBT_NULL, libxl__sprintf(gc, "%s/bios", path),
+-                    "%s", libxl__domain_bios(gc, info));
++    custom_bios = libxl__xs_read(gc, XBT_NULL, libxl__sprintf(gc, "/local/domain/%d/hvmloader/bios", info->domid));
++    if (!custom_bios) {
++        path = libxl__sprintf(gc, "/local/domain/%d/hvmloader", info->domid);
++        xs_mkdir(ctx->xsh, XBT_NULL, path);
++        libxl__xs_write(gc, XBT_NULL, libxl__sprintf(gc, "%s/bios", path),
++                        "%s", libxl__domain_bios(gc, info));
++    }
+ 
+     path = libxl__sprintf(gc, "/local/domain/0/device-model/%d", info->domid);
+     xs_mkdir(ctx->xsh, XBT_NULL, path);
+diff -r 42edf1481c57 tools/libxl/xl_cmdimpl.c
+--- a/tools/libxl/xl_cmdimpl.c	Fri Jul 22 08:55:19 2011 +0100
++++ b/tools/libxl/xl_cmdimpl.c	Sat Jul 30 16:58:27 2011 +0800
+@@ -567,6 +567,10 @@
+         }
+     }
+ 
++    if (!xlu_cfg_get_string (config, "hvmbios", &buf)){
++        c_info->hvmbios = strdup(buf);
++    }
++
+     c_info->type = LIBXL_DOMAIN_TYPE_PV;
+     if (!xlu_cfg_get_string (config, "builder", &buf) &&
+         !strncmp(buf, "hvm", strlen(buf)))

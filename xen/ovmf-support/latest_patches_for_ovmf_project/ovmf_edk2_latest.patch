@@ -1,0 +1,4428 @@
+Index: OvmfPkg/AcpiPlatformDxe/AcpiPlatform.c
+===================================================================
+--- OvmfPkg/AcpiPlatformDxe/AcpiPlatform.c	(revision 0)
++++ OvmfPkg/AcpiPlatformDxe/AcpiPlatform.c	(revision 0)
+@@ -0,0 +1,998 @@
++/** @file
++  ACPI Platform Driver. If OVMF runs in Xen, find Xen ACPI Tables and publish them.
++  Support both Xen and QEMU.
++
++  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++  This program and the accompanying materials
++  are licensed and made available under the terms and conditions of the BSD License
++  which accompanies this distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#include "AcpiPlatform.h"
++
++UINTN mEfiAcpiMaxNumTables = EFI_ACPI_MAX_NUM_TABLES;
++
++XEN_ACPI_TABLE_POINTER                  *XenAcpiTablePointerStructure = NULL;
++EFI_XEN_ACPI_TABLE_INSTANCE             *AcpiTableInstance = NULL;
++
++
++/**
++  This function calculates and updates an UINT8 checksum.
++
++  @param  Buffer          Pointer to buffer to checksum
++  @param  Size            Number of bytes to checksum
++  @param  ChecksumOffset  Offset to place the checksum result in
++
++  @return EFI_SUCCESS     The function completed successfully.
++
++**/
++EFI_STATUS
++AcpiPlatformChecksum (
++  IN VOID       *Buffer,
++  IN UINTN      Size,
++  IN UINTN      ChecksumOffset
++  )
++{
++  UINT8 Sum;
++  UINT8 *Ptr;
++
++  //
++  // Check the parameter
++  //
++  if (!ChecksumOffset) {
++    ChecksumOffset = OFFSET_OF (EFI_ACPI_DESCRIPTION_HEADER, Checksum);
++  }
++
++  Sum = 0;
++  //
++  // Initialize pointer
++  //
++  Ptr = Buffer;
++
++  //
++  // set checksum to 0 first
++  //
++  Ptr[ChecksumOffset] = 0;
++
++  //
++  // add all content of buffer
++  //
++  while ((Size--) != 0) {
++    Sum = (UINT8) (Sum + (*Ptr++));
++  }
++  //
++  // set checksum
++  //
++  Ptr                 = Buffer;
++  Ptr[ChecksumOffset] = (UINT8) (0xff - Sum + 1);
++
++  return EFI_SUCCESS;
++}
++
++/**
++  Checksum all versions of the common tables, RSDP, RSDT, XSDT.
++
++  @param  AcpiTableInstance  Instance of the protocol.
++
++  @return EFI_SUCCESS        The function completed successfully.
++
++**/
++EFI_STATUS
++ChecksumCommonTables (
++  IN OUT EFI_XEN_ACPI_TABLE_INSTANCE            *AcpiTableInstance
++  )
++{
++  //
++  // RSDP ACPI 1.0 checksum for 1.0 table.  This is only the first 20 bytes of the structure
++  //
++  AcpiPlatformChecksum (
++    AcpiTableInstance->Rsdp1,
++    sizeof (EFI_ACPI_1_0_ROOT_SYSTEM_DESCRIPTION_POINTER),
++    OFFSET_OF (EFI_ACPI_1_0_ROOT_SYSTEM_DESCRIPTION_POINTER,
++    Checksum)
++    );
++
++  //
++  // RSDP ACPI 1.0 checksum for 2.0/3.0 table.  This is only the first 20 bytes of the structure
++  //
++  AcpiPlatformChecksum (
++    AcpiTableInstance->Rsdp2,
++    sizeof (EFI_ACPI_1_0_ROOT_SYSTEM_DESCRIPTION_POINTER),
++    OFFSET_OF (EFI_ACPI_1_0_ROOT_SYSTEM_DESCRIPTION_POINTER,
++    Checksum)
++    );
++
++  //
++  // RSDP ACPI 2.0/3.0 checksum, this is the entire table
++  //
++  AcpiPlatformChecksum (
++    AcpiTableInstance->Rsdp2,
++    sizeof (EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER),
++    OFFSET_OF (EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER,
++    ExtendedChecksum)
++    );
++
++  //
++  // RSDT checksums
++  //
++  AcpiPlatformChecksum (
++    AcpiTableInstance->Rsdt1,
++    AcpiTableInstance->Rsdt1->Length,
++    OFFSET_OF (EFI_ACPI_DESCRIPTION_HEADER,
++    Checksum)
++    );
++
++  AcpiPlatformChecksum (
++    AcpiTableInstance->Rsdt2,
++    AcpiTableInstance->Rsdt2->Length,
++    OFFSET_OF (EFI_ACPI_DESCRIPTION_HEADER,
++    Checksum)
++    );
++
++  //
++  // XSDT checksum
++  //
++  AcpiPlatformChecksum (
++    AcpiTableInstance->Xsdt,
++    AcpiTableInstance->Xsdt->Length,
++    OFFSET_OF (EFI_ACPI_DESCRIPTION_HEADER,
++    Checksum)
++    );
++
++  return EFI_SUCCESS;
++}
++
++/**
++  This function creates and adds Xen ACPI tables. 
++  Create and add FADT 1.0 to RSDT;
++  Create and add FADT 2.0 to XSDT;
++  Create and add Secondary Tables(MADT, HPET, TCPA, etc) to RSDT and XSDT;
++  Create and add DSDT and FACS to FACP.
++
++  @param  AcpiTableInstance       Instance of the protocol.
++
++  @return EFI_SUCCESS             The function completed successfully.
++
++**/
++EFI_STATUS
++EFIAPI
++SetAcpiTable (
++  IN EFI_XEN_ACPI_TABLE_INSTANCE           *AcpiTableInstance
++  )
++{
++  EFI_STATUS                               Status;
++  UINT32                                   *CurrentRsdtEntry;
++  VOID                                     *CurrentXsdtEntry;
++  UINT64                                   Buffer64;
++  UINTN                                    TotalSize;
++  EFI_PHYSICAL_ADDRESS                     PageAddress;
++  LIST_ENTRY                               *CurrentList;
++  EFI_XEN_ACPI_SSDT_2_0_TABLE_LIST         *CurrentTable;
++  UINTN                                    RsdtEntryIndex;
++  UINTN                                    XsdtEntryIndex;
++
++  //
++  // Check for invalid input parameters
++  //
++  ASSERT (AcpiTableInstance);
++
++  //
++  // 1. Construct DSDT and FACS
++  //
++  if (XenAcpiTablePointerStructure->XenDsdt2Ptr) {
++    //TotalSize = sizeof (XenAcpiTablePointerStructure->XenDsdt2Ptr->Length);
++    TotalSize = XenAcpiTablePointerStructure->XenDsdt2Ptr->Length;
++    PageAddress = 0xFFFFFFFF;
++    Status = gBS->AllocatePages (
++                    AllocateMaxAddress,
++                    EfiACPIReclaimMemory,
++                    EFI_SIZE_TO_PAGES (TotalSize),
++                    &PageAddress
++                    );
++
++    ZeroMem ((UINT8 *) (UINTN) PageAddress, TotalSize);
++
++    AcpiTableInstance->Dsdt2 = (EFI_ACPI_DESCRIPTION_HEADER *) (UINTN) PageAddress;
++
++    //
++    // Copy Xen DSDT contents to the new DSDT
++    //
++    CopyMem (
++      AcpiTableInstance->Dsdt2,
++      (VOID *) (UINTN) XenAcpiTablePointerStructure->XenDsdt2Ptr,
++      TotalSize
++     );
++
++    //
++    // Checksum the table
++    //
++    AcpiPlatformChecksum (
++      AcpiTableInstance->Dsdt2,
++      AcpiTableInstance->Dsdt2->Length,
++      OFFSET_OF (EFI_ACPI_DESCRIPTION_HEADER,
++      Checksum)
++      );
++  }
++
++  if (XenAcpiTablePointerStructure->XenFacs2Ptr) {
++    TotalSize = sizeof (EFI_ACPI_2_0_FIRMWARE_ACPI_CONTROL_STRUCTURE);
++    PageAddress = 0xFFFFFFFF;
++    Status = gBS->AllocatePages (
++                    AllocateMaxAddress,
++                    EfiACPIMemoryNVS,
++                    EFI_SIZE_TO_PAGES (TotalSize),
++                    &PageAddress
++                    );
++
++    ZeroMem ((UINT8 *) (UINTN) PageAddress, TotalSize);
++
++    AcpiTableInstance->Facs2 = (EFI_ACPI_2_0_FIRMWARE_ACPI_CONTROL_STRUCTURE *) (UINTN) PageAddress;
++
++    //
++    // Copy Xen FACS 2.0 contents to the new FACS 2.0
++    //
++    CopyMem (
++      AcpiTableInstance->Facs2,
++      (VOID *) (UINTN) XenAcpiTablePointerStructure->XenFacs2Ptr,
++      TotalSize
++     );
++
++    //
++    // Checksum the table
++    //
++    AcpiPlatformChecksum (
++      AcpiTableInstance->Facs2,
++      AcpiTableInstance->Facs2->Length,
++      OFFSET_OF (EFI_ACPI_DESCRIPTION_HEADER,
++      Checksum)
++      );
++  }
++
++  //
++  // 2. Set SSDT tables, and then add it to RSDT and XSDT entries
++  //
++  if (!IsListEmpty (&XenAcpiTablePointerStructure->XenSsdtTableList)) {
++    RsdtEntryIndex = 0;
++    XsdtEntryIndex = 0;
++    CurrentList = &XenAcpiTablePointerStructure->XenSsdtTableList;
++
++    do {
++      CurrentList = GetNextNode(&XenAcpiTablePointerStructure->XenSsdtTableList, CurrentList);
++
++      //
++      // Create new table for every secondary table
++      //
++      CurrentTable = (EFI_XEN_ACPI_SSDT_2_0_TABLE_LIST *) (UINTN) CurrentList;
++
++      TotalSize = CurrentTable->Length;
++      PageAddress = 0xFFFFFFFF;
++      Status = gBS->AllocatePages (
++                      AllocateMaxAddress,
++                      EfiACPIReclaimMemory,
++                      EFI_SIZE_TO_PAGES (TotalSize),
++                      &PageAddress
++                      );
++
++      ZeroMem ((UINT8 *) (UINTN) PageAddress, TotalSize);
++
++      //
++      // Copy Xen Acpi table contents to the new table
++      //
++      CopyMem (
++        (VOID *) (UINTN) PageAddress,
++        (VOID *) (UINTN) CurrentTable->XenTablePhysicalAddress,
++        TotalSize
++       );
++
++      //
++      // Checksum the table
++      //
++      AcpiPlatformChecksum (
++        (VOID *) (UINTN) PageAddress,
++        CurrentTable->Length,
++        OFFSET_OF (EFI_ACPI_DESCRIPTION_HEADER,
++        Checksum)
++        );
++
++      //
++      // Add to RSDT 2.0
++      //
++      if (XenAcpiTablePointerStructure->XenFadt1Ptr && RsdtEntryIndex == 0) {
++        //
++        // If FADT 1.0 exists, we keep it the first one and add it later
++        //
++        RsdtEntryIndex = 1;
++      }
++
++      CurrentRsdtEntry  = (UINT32 *) ((UINT8 *) AcpiTableInstance->Rsdt2 + sizeof (EFI_ACPI_DESCRIPTION_HEADER) + RsdtEntryIndex * sizeof (UINT32));
++      *CurrentRsdtEntry = (UINT32) (UINTN) PageAddress;
++
++      //
++      // Add to XSDT 2.0
++      //
++      if (XenAcpiTablePointerStructure->XenFadt1Ptr && XsdtEntryIndex == 0) {
++        //
++        // If FADT 2.0 exists, we keep it the first one and add it later
++        //
++        XsdtEntryIndex = 1;
++      }
++
++      CurrentXsdtEntry  = (VOID *) ((UINT8 *) AcpiTableInstance->Xsdt + sizeof (EFI_ACPI_DESCRIPTION_HEADER) + XsdtEntryIndex * sizeof (UINT64));
++      //
++      // Add entry to XSDT, XSDT expects 64 bit pointers, but
++      // the table pointers in XSDT are not aligned on 8 byte boundary.
++      //
++      Buffer64 = (UINT64) (UINTN) PageAddress;
++      CopyMem (
++        CurrentXsdtEntry,
++        &Buffer64,
++        sizeof (UINT64)
++        );
++
++      RsdtEntryIndex++;
++      XsdtEntryIndex++;
++
++    } while (!IsNodeAtEnd(&XenAcpiTablePointerStructure->XenSsdtTableList, CurrentList));
++  }
++
++  //
++  // 3. Set FADT 1.0, and then add it to RSDT
++  //
++  if (XenAcpiTablePointerStructure->XenFadt1Ptr) {
++    TotalSize = sizeof (EFI_ACPI_1_0_FIXED_ACPI_DESCRIPTION_TABLE);
++    PageAddress = 0xFFFFFFFF;
++    Status = gBS->AllocatePages (
++                    AllocateMaxAddress,
++                    EfiACPIReclaimMemory,
++                    EFI_SIZE_TO_PAGES (TotalSize),
++                    &PageAddress
++                    );
++
++    ZeroMem ((UINT8 *) (UINTN) PageAddress, TotalSize);
++
++    AcpiTableInstance->Fadt1 = (EFI_ACPI_1_0_FIXED_ACPI_DESCRIPTION_TABLE *) (UINTN) PageAddress;
++
++    //
++    // Copy Xen FADT 1.0 contents to the new FADT 1.0
++    //
++    CopyMem (
++      AcpiTableInstance->Fadt1,
++      (VOID *) (UINTN) XenAcpiTablePointerStructure->XenFadt1Ptr,
++      TotalSize
++     );
++
++    if (XenAcpiTablePointerStructure->XenFacs2Ptr) {
++      AcpiTableInstance->Fadt1->FirmwareCtrl = (UINT32) (UINTN) AcpiTableInstance->Facs2;
++    }
++    if (XenAcpiTablePointerStructure->XenDsdt2Ptr) {
++      AcpiTableInstance->Fadt1->Dsdt         = (UINT32) (UINTN) AcpiTableInstance->Dsdt2;
++    }
++
++    //
++    // Checksum the table
++    //
++    AcpiPlatformChecksum (
++      AcpiTableInstance->Fadt1,
++      AcpiTableInstance->Fadt1->Header.Length,
++      OFFSET_OF (EFI_ACPI_DESCRIPTION_HEADER,
++      Checksum)
++      );
++
++    //
++    // Add to RSDT 2.0
++    //
++    CurrentRsdtEntry  = (UINT32 *) ((UINT8 *) AcpiTableInstance->Rsdt2 + sizeof (EFI_ACPI_DESCRIPTION_HEADER));
++    *CurrentRsdtEntry = (UINT32) (UINTN) AcpiTableInstance->Fadt1;
++  }
++
++  //
++  // 4. Set FADT 2.0, and then add it to XSDT
++  //
++  if (XenAcpiTablePointerStructure->XenFadt2Ptr) {
++    TotalSize = sizeof (EFI_ACPI_2_0_FIXED_ACPI_DESCRIPTION_TABLE);
++    PageAddress = 0xFFFFFFFF;
++    Status = gBS->AllocatePages (
++                    AllocateMaxAddress,
++                    EfiACPIReclaimMemory,
++                    EFI_SIZE_TO_PAGES (TotalSize),
++                    &PageAddress
++                    );
++
++    ZeroMem ((UINT8 *) (UINTN) PageAddress, TotalSize);
++
++    AcpiTableInstance->Fadt2 = (EFI_ACPI_2_0_FIXED_ACPI_DESCRIPTION_TABLE *) (UINTN) PageAddress;
++
++    //
++    // Copy Xen FADT 2.0 contents to the new FADT 2.0
++    //
++    CopyMem (
++      AcpiTableInstance->Fadt2,
++      (VOID *) (UINTN) XenAcpiTablePointerStructure->XenFadt2Ptr,
++      TotalSize
++     );
++
++    if (XenAcpiTablePointerStructure->XenFacs2Ptr) {
++      AcpiTableInstance->Fadt2->FirmwareCtrl  = (UINT32) (UINTN) AcpiTableInstance->Facs2;
++      AcpiTableInstance->Fadt2->XFirmwareCtrl = (UINT64) (UINTN) AcpiTableInstance->Facs2;
++    }
++
++    if (XenAcpiTablePointerStructure->XenDsdt2Ptr) {
++      AcpiTableInstance->Fadt2->Dsdt          = (UINT32) (UINTN) AcpiTableInstance->Dsdt2;
++      AcpiTableInstance->Fadt2->XDsdt         = (UINT64) (UINTN) AcpiTableInstance->Dsdt2;
++    }
++
++    //
++    // Checksum the table
++    //
++    AcpiPlatformChecksum (
++      AcpiTableInstance->Fadt2,
++      AcpiTableInstance->Fadt2->Header.Length,
++      OFFSET_OF (EFI_ACPI_DESCRIPTION_HEADER,
++      Checksum)
++      );
++
++    //
++    // Add to XSDT 2.0
++    //
++    CurrentXsdtEntry  = (VOID *) ((UINT8 *) AcpiTableInstance->Xsdt + sizeof (EFI_ACPI_DESCRIPTION_HEADER));
++    //
++    // Add entry to XSDT, XSDT expects 64 bit pointers, but
++    // the table pointers in XSDT are not aligned on 8 byte boundary.
++    //
++    Buffer64 = (UINT64) (UINTN) AcpiTableInstance->Fadt2;
++    CopyMem (
++      CurrentXsdtEntry,
++      &Buffer64,
++      sizeof (UINT64)
++      );
++  }
++
++  return EFI_SUCCESS;
++}
++
++/**
++  This function publishes the specified versions of the Xen ACPI tables by
++  installing EFI configuration table entries for them. Any combination of
++  table versions can be published.
++
++  @param  AcpiTableInstance  Instance of the protocol.
++  @param  Version            Version(s) to publish.
++
++  @return EFI_SUCCESS  The function completed successfully.
++  @return EFI_ABORTED  The function could not complete successfully.
++
++**/
++EFI_STATUS
++EFIAPI
++PublishTables (
++  IN EFI_XEN_ACPI_TABLE_INSTANCE              *AcpiTableInstance,
++  IN EFI_ACPI_TABLE_VERSION                   Version
++  )
++{
++  EFI_STATUS                Status;
++
++  //
++  // Construct all the APCI tables
++  //
++  Status = SetAcpiTable (AcpiTableInstance);
++  if (EFI_ERROR (Status)) {
++    return EFI_ABORTED;
++  }
++
++  //
++  // Do checksum again because Dsdt/Xsdt is updated.
++  //
++  ChecksumCommonTables (AcpiTableInstance);
++
++  //
++  // Add the RSD_PTR to the system table and store that we have installed the
++  // tables.
++  //
++  if (((Version & EFI_ACPI_TABLE_VERSION_1_0B) != 0) &&
++      !AcpiTableInstance->TablesInstalled1) {
++
++    Status = gBS->InstallConfigurationTable (&gEfiAcpi10TableGuid, AcpiTableInstance->Rsdp1);
++    if (EFI_ERROR (Status)) {
++      return EFI_ABORTED;
++    }
++
++    AcpiTableInstance->TablesInstalled1 = TRUE;
++  }
++
++  if (((Version & EFI_ACPI_TABLE_VERSION_2_0) != 0 ||
++       (Version & EFI_ACPI_TABLE_VERSION_3_0) != 0) &&
++      !AcpiTableInstance->TablesInstalled2) {
++    Status = gBS->InstallConfigurationTable (&gEfiAcpiTableGuid, AcpiTableInstance->Rsdp2);
++    if (EFI_ERROR (Status)) {
++      return EFI_ABORTED;
++    }
++
++    AcpiTableInstance->TablesInstalled2= TRUE;
++  }
++
++  return EFI_SUCCESS;
++}
++
++/**
++  Installs an ACPI table into the RSDT/XSDT.
++  Note that the ACPI table should be checksumed before installing it.
++  Otherwise it will assert.
++
++  @param  This                 Protocol instance pointer.
++  @param  AcpiTableBuffer      A pointer to a buffer containing the ACPI table to be installed.
++  @param  AcpiTableBufferSize  Specifies the size, in bytes, of the AcpiTableBuffer buffer.
++  @param  TableKey             Reurns a key to refer to the ACPI table.
++
++  @return EFI_SUCCESS            The table was successfully inserted.
++  @return EFI_INVALID_PARAMETER  Either AcpiTableBuffer is NULL, TableKey is NULL, or AcpiTableBufferSize and the size field embedded in the ACPI table pointed to by AcpiTableBuffer are not in sync.
++  @return EFI_ABORTED            Set Apci Tables error
++  @return EFI_LOAD_ERROR         Insert into configuration tables error
++
++**/
++EFI_STATUS
++EFIAPI
++InstallAcpiTable (
++  IN CONST EFI_ACPI_TABLE_PROTOCOL          *This,
++  IN CONST VOID                             *AcpiTableBuffer,
++  IN       UINTN                            AcpiTableBufferSize,
++  OUT      UINTN                            *TableKey
++  )
++{
++  EFI_STATUS                         Status;
++  EFI_XEN_ACPI_TABLE_INSTANCE        *AcpiTableInstance;
++
++  //
++  // Get the instance of the Xen ACPI table protocol
++  //
++  AcpiTableInstance = EFI_ACPI_TABLE_INSTANCE_FROM_THIS (This);
++
++  //
++  // Construct all the APCI tables
++  //
++  Status = SetAcpiTable (AcpiTableInstance);
++  if (EFI_ERROR (Status)) {
++    return EFI_ABORTED;
++  }
++
++  //
++  // Construct APCI table and install it to configuration table
++  //
++  Status = PublishTables (
++             AcpiTableInstance,
++             EFI_ACPI_TABLE_VERSION_1_0B | EFI_ACPI_TABLE_VERSION_2_0 | EFI_ACPI_TABLE_VERSION_3_0
++             );
++  if (EFI_ERROR (Status)) {
++    gBS->FreePool (AcpiTableInstance);
++    gBS->FreePool (XenAcpiTablePointerStructure);
++    return EFI_LOAD_ERROR;
++  }
++
++  //
++  // Completed successfully
++  //
++  return EFI_SUCCESS;
++}
++
++/**
++  Removes an ACPI table from the RSDT/XSDT.
++
++  @param  This      Protocol instance pointer.
++  @param  TableKey  Specifies the table to uninstall.  The key was returned from InstallAcpiTable().
++
++  @return EFI_SUCCESS    The table was successfully uninstalled.
++
++**/
++EFI_STATUS
++EFIAPI
++UninstallAcpiTable (
++  IN CONST EFI_ACPI_TABLE_PROTOCOL                    *This,
++  IN UINTN                                            TableKey
++  )
++{
++  return EFI_SUCCESS;
++}
++
++/**
++  Constructor for the Xen ACPI table protocol. Initializes instance data.
++
++  @param  AcpiTableInstance       Instance to construct
++
++  @return EFI_SUCCESS             Instance initialized.
++  @return EFI_OUT_OF_RESOURCES    Unable to allocate required resources.
++
++**/
++EFI_STATUS
++XenAcpiTableConstructor (
++  EFI_XEN_ACPI_TABLE_INSTANCE    *AcpiTableInstance
++  )
++{
++  EFI_STATUS                     Status;
++  UINTN                          TotalSize;
++  UINT8                          *Pointer;
++  EFI_PHYSICAL_ADDRESS           PageAddress;
++
++  //
++  // Check for invalid input parameters and global variable
++  //
++  ASSERT (AcpiTableInstance);
++  ASSERT (XenAcpiTablePointerStructure);
++
++  AcpiTableInstance->AcpiTableProtocol.InstallAcpiTable   = InstallAcpiTable;
++  AcpiTableInstance->AcpiTableProtocol.UninstallAcpiTable = UninstallAcpiTable;
++
++  //
++  // Create RSDP, RSDT, XSDT structures
++  // Allocate all buffers
++  //
++  TotalSize = sizeof (EFI_ACPI_1_0_ROOT_SYSTEM_DESCRIPTION_POINTER) +
++      sizeof (EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER) +
++      sizeof (EFI_ACPI_DESCRIPTION_HEADER) +      // for ACPI 1.0 RSDT
++      mEfiAcpiMaxNumTables * sizeof (UINT32) +
++      sizeof (EFI_ACPI_DESCRIPTION_HEADER) +      // for ACPI 2.0/3.0 RSDT
++      mEfiAcpiMaxNumTables * sizeof (UINT32) +    // FADT 1.0, (SSDTs), ...
++      sizeof (EFI_ACPI_DESCRIPTION_HEADER) +      // for ACPI 2.0/3.0 XSDT
++      mEfiAcpiMaxNumTables * sizeof (UINT64);     // FADT 2.0, (SSDTs), ...
++
++  //
++  // Allocate memory in the lower 32 bit of address range for
++  // compatibility with ACPI 1.0 OS.
++  //
++  // This is done because ACPI 1.0 pointers are 32 bit values.
++  // ACPI 2.0 OS and all 64 bit OS must use the 64 bit ACPI table addresses.
++  // There is no architectural reason these should be below 4GB, it is purely
++  // for convenience of implementation that we force memory below 4GB.
++  //
++  PageAddress = 0xFFFFFFFF;
++  Status = gBS->AllocatePages (
++                  AllocateMaxAddress,
++                  EfiACPIReclaimMemory,
++                  EFI_SIZE_TO_PAGES (TotalSize),
++                  &PageAddress
++                  );
++
++  if (EFI_ERROR (Status)) {
++    return EFI_OUT_OF_RESOURCES;
++  }
++
++  Pointer = (UINT8 *) (UINTN) PageAddress;
++  ZeroMem (Pointer, TotalSize);
++
++  AcpiTableInstance->Rsdp1 = (EFI_ACPI_1_0_ROOT_SYSTEM_DESCRIPTION_POINTER *) Pointer;
++  Pointer += sizeof (EFI_ACPI_1_0_ROOT_SYSTEM_DESCRIPTION_POINTER);
++  AcpiTableInstance->Rsdp2 = (EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER *) Pointer;
++  Pointer += sizeof (EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER);
++
++  AcpiTableInstance->Rsdt1 = (EFI_ACPI_DESCRIPTION_HEADER *) Pointer;
++  Pointer += (sizeof (EFI_ACPI_DESCRIPTION_HEADER) + EFI_ACPI_MAX_NUM_TABLES * sizeof (UINT32));
++  AcpiTableInstance->Rsdt2 = (EFI_ACPI_DESCRIPTION_HEADER *) Pointer;
++  Pointer += (sizeof (EFI_ACPI_DESCRIPTION_HEADER) + EFI_ACPI_MAX_NUM_TABLES * sizeof (UINT32));
++
++  AcpiTableInstance->Xsdt = (EFI_ACPI_DESCRIPTION_HEADER *) Pointer;
++
++  //
++  // Initialize RSDP 1.0 by copying Xen ACPI RSDP 1.0 table, if it exists
++  // (Not work for Xen now)
++  //
++  if (XenAcpiTablePointerStructure->XenRsdp1Ptr) {
++    CopyMem (
++      AcpiTableInstance->Rsdp1,
++      (VOID *) (UINTN) XenAcpiTablePointerStructure->XenRsdp1Ptr,
++      sizeof (EFI_ACPI_1_0_ROOT_SYSTEM_DESCRIPTION_POINTER)
++     );
++     //
++     // Set the RSDT pointer
++     //
++     AcpiTableInstance->Rsdp1->RsdtAddress = (UINT32) (UINTN) AcpiTableInstance->Rsdt1;
++  }
++
++  //
++  // Initialize RSDP 2.0 by copying Xen ACPI RSDP 2.0 table
++  //
++  if (XenAcpiTablePointerStructure->XenRsdp2Ptr) {
++    CopyMem (
++      AcpiTableInstance->Rsdp2,
++      (VOID *) (UINTN) XenAcpiTablePointerStructure->XenRsdp2Ptr,
++      sizeof (EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER)
++     );
++
++     //
++     // Set the RSDT pointer to new address
++     //
++     AcpiTableInstance->Rsdp2->RsdtAddress = (UINT32) (UINTN) AcpiTableInstance->Rsdt2;
++
++     //
++     // Set the XSDT pointer to new address
++     //
++     AcpiTableInstance->Rsdp2->XsdtAddress = (UINT64) (UINTN) AcpiTableInstance->Xsdt;
++  }
++
++  //
++  // Initialize RSDT Header and Entries pointer (1.0/2.0)
++  //
++  if (XenAcpiTablePointerStructure->XenRsdt1Ptr) {
++    //
++    // There is no RSDT 1.0 in Xen ACPI (Not work for Xen now)
++    //
++    CopyMem (
++      AcpiTableInstance->Rsdt1,
++      (VOID *) (UINTN) XenAcpiTablePointerStructure->XenRsdt1Ptr,
++      sizeof (EFI_ACPI_DESCRIPTION_HEADER)
++     );
++  }
++  if (XenAcpiTablePointerStructure->XenRsdt2Ptr) {
++    //
++    // Memory copy all the RSDT 2.0 entries of Xen RSDT
++    //
++    AcpiTableInstance->NumberOfTableEntries2 = XenAcpiTablePointerStructure->XenNumberOfTableEntries2;
++
++    CopyMem (
++      AcpiTableInstance->Rsdt2,
++      (VOID *) (UINTN) XenAcpiTablePointerStructure->XenRsdt2Ptr,
++      sizeof (EFI_ACPI_DESCRIPTION_HEADER) + 
++      AcpiTableInstance->NumberOfTableEntries2 * sizeof (UINT32)
++     );
++  }
++
++  //
++  // Initialize XSDT Header and Entries pointer (1.0/2.0)
++  //
++  if (XenAcpiTablePointerStructure->XenXsdtPtr) {
++    //
++    // Memory copy all the RSDT entries of Xen RSDT
++    //
++    AcpiTableInstance->NumberOfTableEntries2 = XenAcpiTablePointerStructure->XenNumberOfTableEntries2;
++
++    CopyMem (
++      AcpiTableInstance->Xsdt,
++      (VOID *) (UINTN) XenAcpiTablePointerStructure->XenXsdtPtr,
++      sizeof (EFI_ACPI_DESCRIPTION_HEADER) + 
++      AcpiTableInstance->NumberOfTableEntries2 * sizeof (UINT64)
++     );
++  }
++
++  //
++  // Completed successfully
++  //
++  return EFI_SUCCESS;
++}
++
++/**
++  Locate the first instance of a protocol.  If the protocol requested is an
++  FV protocol, then it will return the first FV that contains the ACPI table
++  storage file.
++
++  @param  Instance      Return pointer to the first instance of the protocol
++
++  @return EFI_SUCCESS           The function completed successfully.
++  @return EFI_NOT_FOUND         The protocol could not be located.
++  @return EFI_OUT_OF_RESOURCES  There are not enough resources to find the protocol.
++
++**/
++EFI_STATUS
++LocateFvInstanceWithTables (
++  OUT EFI_FIRMWARE_VOLUME2_PROTOCOL **Instance
++  )
++{
++  EFI_STATUS                    Status;
++  EFI_HANDLE                    *HandleBuffer;
++  UINTN                         NumberOfHandles;
++  EFI_FV_FILETYPE               FileType;
++  UINT32                        FvStatus;
++  EFI_FV_FILE_ATTRIBUTES        Attributes;
++  UINTN                         Size;
++  UINTN                         Index;
++  EFI_FIRMWARE_VOLUME2_PROTOCOL *FvInstance;
++
++  FvStatus = 0;
++
++  //
++  // Locate protocol.
++  //
++  Status = gBS->LocateHandleBuffer (
++                   ByProtocol,
++                   &gEfiFirmwareVolume2ProtocolGuid,
++                   NULL,
++                   &NumberOfHandles,
++                   &HandleBuffer
++                   );
++  if (EFI_ERROR (Status)) {
++    //
++    // Defined errors at this time are not found and out of resources.
++    //
++    return Status;
++  }
++
++  //
++  // Looking for FV with ACPI storage file
++  //
++
++  for (Index = 0; Index < NumberOfHandles; Index++) {
++    //
++    // Get the protocol on this handle
++    // This should not fail because of LocateHandleBuffer
++    //
++    Status = gBS->HandleProtocol (
++                     HandleBuffer[Index],
++                     &gEfiFirmwareVolume2ProtocolGuid,
++                     (VOID**) &FvInstance
++                     );
++    ASSERT_EFI_ERROR (Status);
++
++    //
++    // See if it has the ACPI storage file
++    //
++    Status = FvInstance->ReadFile (
++                           FvInstance,
++                           (EFI_GUID*)PcdGetPtr (PcdAcpiTableStorageFile),
++                           NULL,
++                           &Size,
++                           &FileType,
++                           &Attributes,
++                           &FvStatus
++                           );
++
++    //
++    // If we found it, then we are done
++    //
++    if (Status == EFI_SUCCESS) {
++      *Instance = FvInstance;
++      break;
++    }
++  }
++
++  //
++  // Our exit status is determined by the success of the previous operations
++  // If the protocol was found, Instance already points to it.
++  //
++
++  //
++  // Free any allocated buffers
++  //
++  gBS->FreePool (HandleBuffer);
++
++  return Status;
++}
++
++/**
++  Entrypoint of Acpi Platform driver.
++
++  @param  ImageHandle
++  @param  SystemTable
++
++  @return EFI_SUCCESS
++  @return EFI_LOAD_ERROR
++  @return EFI_OUT_OF_RESOURCES
++
++**/
++EFI_STATUS
++EFIAPI
++AcpiPlatformEntryPoint (
++  IN EFI_HANDLE         ImageHandle,
++  IN EFI_SYSTEM_TABLE   *SystemTable
++  )
++{
++  EFI_STATUS                     Status;
++  EFI_ACPI_TABLE_PROTOCOL        *AcpiTable;
++  EFI_FIRMWARE_VOLUME2_PROTOCOL  *FwVol;
++  INTN                           Instance;
++  EFI_ACPI_COMMON_HEADER         *CurrentTable;
++  UINTN                          TableHandle;
++  UINT32                         FvStatus;
++  UINTN                          TableSize;
++  UINTN                          Size;
++  EFI_XEN_ACPI_TABLE_INSTANCE    *PrivateData;
++
++  Instance     = 0;
++  CurrentTable = NULL;
++  TableHandle  = 0;
++
++  //
++  // Find out the Xen ACPI tables
++  //
++  Status = DetectXenAcpi();
++  if (Status == EFI_SUCCESS) {
++    //
++    // Construct the AcpiTableInstance, and then publish Xen ACPI table
++    // Initialize our protocol
++    //
++    PrivateData = AllocateZeroPool (sizeof (EFI_XEN_ACPI_TABLE_INSTANCE));
++    ASSERT (PrivateData);
++    PrivateData->Signature = EFI_ACPI_TABLE_SIGNATURE;
++
++    //
++    // Call constructors
++    //
++    Status = XenAcpiTableConstructor (PrivateData);
++    if (EFI_ERROR (Status)) {
++      gBS->FreePool (PrivateData);
++      return EFI_LOAD_ERROR;
++    }
++
++    //
++    // Publish Xen ACPI tables
++    //
++    Status = PrivateData->AcpiTableProtocol.InstallAcpiTable (
++                              &PrivateData->AcpiTableProtocol,
++                              NULL,
++                              0,
++                              NULL
++                              );
++
++    if (EFI_ERROR(Status)) {
++      return EFI_ABORTED;
++    }
++  }
++  else {
++    //
++    // Find the AcpiTable protocol
++    //
++    Status = gBS->LocateProtocol (&gEfiAcpiTableProtocolGuid, NULL, (VOID**)&AcpiTable);
++    if (EFI_ERROR (Status)) {
++      return EFI_ABORTED;
++    }
++
++    //
++    // Locate the firmware volume protocol
++    //
++    Status = LocateFvInstanceWithTables (&FwVol);
++    if (EFI_ERROR (Status)) {
++      return EFI_ABORTED;
++    }
++    //
++    // Read tables from the storage file.
++    //
++    while (Status == EFI_SUCCESS) {
++
++      Status = FwVol->ReadSection (
++                        FwVol,
++                        (EFI_GUID*)PcdGetPtr (PcdAcpiTableStorageFile),
++                        EFI_SECTION_RAW,
++                        Instance,
++                        (VOID**) &CurrentTable,
++                        &Size,
++                        &FvStatus
++                        );
++      if (!EFI_ERROR(Status)) {
++        //
++        // Add the table
++        //
++        TableHandle = 0;
++
++        TableSize = ((EFI_ACPI_DESCRIPTION_HEADER *) CurrentTable)->Length;
++        ASSERT (Size >= TableSize);
++
++        //
++        // Checksum ACPI table
++        //
++        AcpiPlatformChecksum ((UINT8*)CurrentTable, TableSize, 0);
++
++        //
++        // Install ACPI table
++        //
++        Status = AcpiTable->InstallAcpiTable (
++                              AcpiTable,
++                              CurrentTable,
++                              TableSize,
++                              &TableHandle
++                              );
++        if (EFI_ERROR(Status)) {
++          return EFI_ABORTED;
++        }
++
++        //
++        // Increment the instance
++        //
++        Instance++;
++        CurrentTable = NULL;
++      }
++    }
++  }
++  return EFI_SUCCESS;
++}
++
+Index: OvmfPkg/AcpiPlatformDxe/XenAcpiSupport.c
+===================================================================
+--- OvmfPkg/AcpiPlatformDxe/XenAcpiSupport.c	(revision 0)
++++ OvmfPkg/AcpiPlatformDxe/XenAcpiSupport.c	(revision 0)
+@@ -0,0 +1,360 @@
++/** @file
++  ACPI Platform Driver. If OVMF runs in Xen, find Xen ACPI Tables and publish them.
++  Support both Xen and QEMU.
++
++  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++  This program and the accompanying materials
++  are licensed and made available under the terms and conditions of the BSD License
++  which accompanies this distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#include "AcpiPlatform.h"
++
++/**
++  This function checks an UINT8 checksum.
++
++  @param  Buffer          Pointer to buffer to checksum
++  @param  Size            Number of bytes to checksum
++
++  @return EFI_SUCCESS     The function completed successfully.
++
++**/
++EFI_STATUS
++VerifyAcpiPlatformChecksum (
++  IN VOID       *Buffer,
++  IN UINTN      Size
++  )
++{
++  UINT8 Sum;
++  UINT8 *Ptr;
++
++  Sum = 0;
++  //
++  // Initialize pointer
++  //
++  Ptr = Buffer;
++
++  //
++  // Add all content of buffer
++  //
++  while ((Size--) != 0) {
++    Sum = (UINT8) (Sum + (*Ptr++));
++  }
++  //
++  // Check checksum
++  //
++  if (Sum != 0){
++    return EFI_CRC_ERROR;
++  }
++
++  return EFI_SUCCESS;
++}
++
++/**
++  Initialize the XenAcpiTablePointer Structure
++
++  @return EFI_SUCCESS             The function completed successfully.
++
++**/
++EFI_STATUS
++EFIAPI
++InitializeXenAcpiTablePointer (
++  VOID
++  )
++{
++  XenAcpiTablePointerStructure->XenRsdp1Ptr = NULL;
++  XenAcpiTablePointerStructure->XenRsdp2Ptr = NULL;  // Xen RSDP 2.0
++  XenAcpiTablePointerStructure->XenRsdt1Ptr = NULL;
++  XenAcpiTablePointerStructure->XenRsdt2Ptr = NULL;  // Xen RSDT 2.0
++  XenAcpiTablePointerStructure->XenXsdtPtr  = NULL;  // Xen XSDT 2.0
++  XenAcpiTablePointerStructure->XenFadt1Ptr = NULL;  // Xen FADT 1.0
++  XenAcpiTablePointerStructure->XenFadt2Ptr = NULL;  // Xen FADT 2.0
++  XenAcpiTablePointerStructure->XenFacs1Ptr = NULL;
++  XenAcpiTablePointerStructure->XenFacs2Ptr = NULL;  // Xen FACS 2.0
++  XenAcpiTablePointerStructure->XenDsdt1Ptr = NULL;
++  XenAcpiTablePointerStructure->XenDsdt2Ptr = NULL;  // Xen DSDT
++
++  XenAcpiTablePointerStructure->XenNumberOfTableEntries1 = 0;
++  XenAcpiTablePointerStructure->XenNumberOfTableEntries2 = 0;
++
++  return EFI_SUCCESS;
++}
++
++/**
++  Figures out if Xen hvmloader provides ACPI Table for HVM. If it provides, get the pointers of each table
++
++  @return EFI_SUCCESS             The function completed successfully.
++
++**/
++EFI_STATUS
++EFIAPI
++DetectXenAcpiTable (
++  VOID
++  )
++{
++  UINTN                                        XenAcpiPtr;
++
++  EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER *Rsdp2Structure;
++  EFI_ACPI_2_0_RSDT                            *Rsdt2Structure; //Ptr to RSDT2 header
++  EFI_ACPI_2_0_XSDT                            *XsdtStructure;  //Ptr to XSDT2 header
++  EFI_ACPI_2_0_FIXED_ACPI_DESCRIPTION_TABLE    *Fadt2Structure; //Ptr to FADT header
++  EFI_ACPI_DESCRIPTION_HEADER                  *AcpiTableHeader; //Ptr to DSDT header
++
++  EFI_ACPI_TABLE_VERSION                       Version;
++  EFI_STATUS                                   Status;
++  EFI_XEN_ACPI_SSDT_2_0_TABLE_LIST             *CurrentTableList;
++  UINT64                                       Buffer64;
++  UINTN                                        Index;
++  UINT8                                        Length;
++
++  //
++  // Initialize the XEN_ACPI_TABLE_POINTER
++  //
++  InitializeXenAcpiTablePointer();
++  InitializeListHead (&XenAcpiTablePointerStructure->XenSsdtTableList);
++
++  //
++  // Detect the RSDP table
++  //
++  for (XenAcpiPtr = XEN_ACPI_PHYSICAL_ADDRESS; XenAcpiPtr < XEN_BIOS_PHYSICAL_END; XenAcpiPtr += 0x10) {
++
++    Rsdp2Structure = (EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER *) (UINTN) XenAcpiPtr;
++
++    if (!AsciiStrnCmp ((CHAR8 *) &Rsdp2Structure->Signature, "RSD PTR ", 8)) {
++      //
++      // Detect the Acpi Version
++      //
++      Version = Rsdp2Structure->Revision;
++
++      //
++      // RSDP ACPI 1.0 checksum for 2.0/3.0 table.  This is only the first 20 bytes of the structure
++      //
++      Status = VerifyAcpiPlatformChecksum (
++        Rsdp2Structure,
++        sizeof (EFI_ACPI_1_0_ROOT_SYSTEM_DESCRIPTION_POINTER)
++        );
++
++      //
++      // For RSDP 2.0 (Xen-4.2 only has a RSDP 2.0 table)
++      //
++      if (Version >= 2) {
++
++        //
++        // RSDP ACPI 2.0/3.0 checksum, this is the entire table
++        //
++        Status = VerifyAcpiPlatformChecksum (
++          Rsdp2Structure,
++          sizeof (EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER)
++          );
++
++        if (Status != EFI_SUCCESS) {
++          break;
++        }
++
++        //
++        // Get Xen RSDP pointer, and then RSDT2.0 and XSDT pointers
++        //
++        XenAcpiTablePointerStructure->XenRsdp2Ptr = Rsdp2Structure;
++        XenAcpiTablePointerStructure->XenRsdt2Ptr = (EFI_ACPI_DESCRIPTION_HEADER *) (UINTN) Rsdp2Structure->RsdtAddress;
++        XenAcpiTablePointerStructure->XenXsdtPtr  = (EFI_ACPI_DESCRIPTION_HEADER *) (UINTN) Rsdp2Structure->XsdtAddress;
++
++        //
++        // Detect the RSDT table, get the FADT 1.0 pointer
++        //
++        Rsdt2Structure = (EFI_ACPI_2_0_RSDT *) (UINTN) XenAcpiTablePointerStructure->XenRsdt2Ptr;
++
++        if (!AsciiStrnCmp ((CHAR8 *) &Rsdt2Structure->Header.Signature, "RSDT", 4)) {
++
++          Status = VerifyAcpiPlatformChecksum (
++            Rsdt2Structure,
++            Rsdt2Structure->Header.Length
++            );
++
++          if (Status != EFI_SUCCESS) {
++            break;
++          }
++
++          //
++          // The first one is FADT 1.0 table
++          //
++          XenAcpiTablePointerStructure->XenFadt1Ptr = (EFI_ACPI_1_0_FIXED_ACPI_DESCRIPTION_TABLE *) (UINTN) Rsdt2Structure->Entry[0];
++
++          //
++          // Calculate the Number tables pointed by RSDT/XSDT (FADT1.0/2.0 and SSDTs)
++          //
++          XenAcpiTablePointerStructure->XenNumberOfTableEntries2 = (XenAcpiTablePointerStructure->XenRsdt2Ptr->Length - sizeof (EFI_ACPI_DESCRIPTION_HEADER)) / sizeof (UINT32);
++        }
++
++        //
++        // Detect the XSDT 2.0 table, get the FADT 2.0 pointer
++        //
++        XsdtStructure = (EFI_ACPI_2_0_XSDT *) (UINTN) XenAcpiTablePointerStructure->XenXsdtPtr;
++
++        if (!AsciiStrnCmp ((CHAR8 *) &XsdtStructure->Header.Signature, "XSDT", 4)) {
++
++          Status = VerifyAcpiPlatformChecksum (
++            XsdtStructure,
++            XsdtStructure->Header.Length
++            );
++
++          if (Status != EFI_SUCCESS) {
++            break;
++          }
++
++          //
++          // The first one is FADT 2.0 table
++          //
++          CopyMem (
++            &Buffer64,
++            (VOID *) (UINTN) XenAcpiTablePointerStructure->XenXsdtPtr + sizeof(EFI_ACPI_DESCRIPTION_HEADER),
++            sizeof (UINT64)
++           );
++
++           XenAcpiTablePointerStructure->XenFadt2Ptr = (EFI_ACPI_2_0_FIXED_ACPI_DESCRIPTION_TABLE *) (UINTN) HIGH_32_BITS(Buffer64);
++           Fadt2Structure = XenAcpiTablePointerStructure->XenFadt2Ptr;
++
++
++          //
++          // Following tables are the Secondary System Description Tables (SSDT), we use a list to store them
++          // RSDT 2.0 and XSDT 2.0 share the same SSDT in Xen-4.2
++          //
++          Length = XenAcpiTablePointerStructure->XenNumberOfTableEntries2;
++          for (Index = 1; Index < Length; Index++) {
++            //
++            // Create a new list entry
++            //
++            CurrentTableList = AllocatePool (sizeof (EFI_XEN_ACPI_SSDT_2_0_TABLE_LIST));
++            ASSERT (CurrentTableList);
++
++            CopyMem (
++              &Buffer64,
++              (VOID *) (UINTN) XenAcpiTablePointerStructure->XenXsdtPtr + sizeof(EFI_ACPI_DESCRIPTION_HEADER) + Index * sizeof (UINT64),
++              sizeof (UINT64)
++             );
++            CurrentTableList->XenTablePhysicalAddress = (UINTN) HIGH_32_BITS(Buffer64);
++
++            AcpiTableHeader = (EFI_ACPI_DESCRIPTION_HEADER *) (UINTN) CurrentTableList->XenTablePhysicalAddress;
++
++            //
++            // If we find MADT, HPET, TCPA tables
++            //
++            if (!AsciiStrnCmp ((CHAR8 *) &AcpiTableHeader->Signature, "APIC", 4) ||
++                !AsciiStrnCmp ((CHAR8 *) &AcpiTableHeader->Signature, "HPET", 4) ||
++                !AsciiStrnCmp ((CHAR8 *) &AcpiTableHeader->Signature, "TCPA", 4)) {
++              CurrentTableList->Signature = AcpiTableHeader->Signature;
++              CurrentTableList->Length = AcpiTableHeader->Length;
++            }
++            else {
++              //
++              // For other tables found in secondary tables 
++              //
++              CurrentTableList->Signature = 0;
++              if ((Index + 1) < Length) {
++                CurrentTableList->Length = XsdtStructure->Entry[Index+1] - XsdtStructure->Entry[Index];
++              }
++              else{
++                //
++                // The last table ( We find the secondary tables is located directly adjacent to XSDT table in Xen ACPI)
++                //
++                CurrentTableList->Length = (UINTN) (XenAcpiTablePointerStructure->XenXsdtPtr) - XsdtStructure->Entry[Index];
++              }
++            }
++            //
++            // Add the table to the current list of tables
++            //
++
++            InsertTailList (&XenAcpiTablePointerStructure->XenSsdtTableList, &CurrentTableList->Link);
++          }
++
++          //
++          // Detect the FADT 2.0, then get the DSDT and FACS 2.0
++          // FADT 1.0 and FADT 2.0 point to the same DSDT and FACS 2.0 in Xen-4.2
++          //
++          Fadt2Structure = (EFI_ACPI_2_0_FIXED_ACPI_DESCRIPTION_TABLE *) (UINTN) XenAcpiTablePointerStructure->XenFadt2Ptr;
++
++          if (!AsciiStrnCmp ((CHAR8 *) &Fadt2Structure->Header.Signature, "FACP", 4)) {
++
++            Status = VerifyAcpiPlatformChecksum (
++              Fadt2Structure,
++              Fadt2Structure->Header.Length
++              );
++
++            if (Status != EFI_SUCCESS) {
++              break;
++            }
++
++            XenAcpiTablePointerStructure->XenFacs2Ptr = (EFI_ACPI_2_0_FIRMWARE_ACPI_CONTROL_STRUCTURE *) (UINTN) Fadt2Structure->FirmwareCtrl;
++            XenAcpiTablePointerStructure->XenDsdt2Ptr = (EFI_ACPI_DESCRIPTION_HEADER *) (UINTN) Fadt2Structure->Dsdt;
++          }
++        }
++      }
++      else {
++
++        //
++        // RSDP 1.0 reserved.
++        //
++        if (Status != EFI_SUCCESS) {
++          break;
++        }
++      }
++    }
++  }
++
++  return EFI_SUCCESS;
++}
++
++/**
++  Entry point of the ACPI table driver.
++  Creates and initializes an instance of the ACPI Table
++  Protocol and installs it on a new handle.
++
++  @return EFI_SUCCESS           Driver initialized successfully.
++  @return EFI_LOAD_ERROR        Failed to Initialize or has been loaded.
++
++**/
++EFI_STATUS
++EFIAPI
++DetectXenAcpi (
++  VOID
++  )
++{
++  EFI_HOB_GUID_TYPE              *GuidHob;
++
++  //
++  // See if a XenInfo HOB is available
++  //
++  GuidHob = GetFirstGuidHob (&gEfiXenInfoGuid);
++  if (GuidHob != NULL) {
++    //
++    // We are running in Xen. Detect Xen ACPI table and get the pointer
++    //
++    XenAcpiTablePointerStructure = AllocateZeroPool (sizeof (XEN_ACPI_TABLE_POINTER));
++    ASSERT (XenAcpiTablePointerStructure);
++
++    InitializeXenAcpiTablePointer();
++    DetectXenAcpiTable();
++
++    //
++    // If RSDP is found, we can get the Xen ACPI Tables
++    //
++    if (XenAcpiTablePointerStructure->XenRsdp1Ptr || XenAcpiTablePointerStructure->XenRsdp2Ptr) {
++
++      //
++      // Get Xen ACPI table successfully
++      //
++      return EFI_SUCCESS;
++    }
++    else {
++      gBS->FreePool (XenAcpiTablePointerStructure);
++    }
++  }
++
++  return EFI_NOT_FOUND;
++}
++
+Index: OvmfPkg/AcpiPlatformDxe/AcpiPlatform.h
+===================================================================
+--- OvmfPkg/AcpiPlatformDxe/AcpiPlatform.h	(revision 0)
++++ OvmfPkg/AcpiPlatformDxe/AcpiPlatform.h	(revision 0)
+@@ -0,0 +1,160 @@
++/** @file
++  ACPI Platform Driver. Publish Xen ACPI Table inside OVMF. Support both Xen and QEMU.
++
++  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++  This program and the accompanying materials
++  are licensed and made available under the terms and conditions of the BSD License
++  which accompanies this distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#ifndef _ACPI_PLATFORM_DXE_H_
++#define _ACPI_PLATFORM_DXE_H_
++
++#include <PiDxe.h>
++
++#include <Protocol/AcpiTable.h>
++#include <Guid/Acpi.h>
++#include <Protocol/AcpiSystemDescriptionTable.h>
++#include <Protocol/DxeSmmReadyToLock.h>
++#include <Protocol/FirmwareVolume2.h>
++
++#include <Library/BaseLib.h>
++#include <Library/DebugLib.h>
++#include <Library/UefiLib.h>
++#include <Library/BaseMemoryLib.h>
++#include <Library/UefiDriverEntryPoint.h>
++#include <Library/MemoryAllocationLib.h>
++#include <Library/UefiBootServicesTableLib.h>
++#include <Library/PcdLib.h>
++#include <Library/HobLib.h>
++#include <IndustryStandard/Acpi.h>
++
++
++#define XEN_ACPI_PHYSICAL_ADDRESS         0x000EA020
++#define XEN_BIOS_PHYSICAL_END             0x000FFFFF
++
++extern EFI_GUID gEfiXenInfoGuid;
++
++//
++// The maximum number of tables this driver supports
++//
++#define EFI_ACPI_MAX_NUM_TABLES 20
++
++//
++// Macro to get the high 32 bits of a 64 bit address
++//
++#define HIGH_PART             0x00000000FFFFFFFFULL
++#define HIGH_32_BITS(a)       ( (a) & HIGH_PART )
++
++//
++// Protocol private structure definition
++//
++//
++// ACPI support protocol instance signature definition.
++//
++#define EFI_ACPI_TABLE_SIGNATURE  SIGNATURE_32 ('S', 'T', 'A', 'E')
++
++//
++// Xen ACPI support protocol instance data structure
++//
++typedef struct {
++  UINTN                                         Signature;
++  EFI_ACPI_1_0_ROOT_SYSTEM_DESCRIPTION_POINTER  *Rsdp1;                 // Pointer to RSD_PTR structure
++  EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER  *Rsdp2;                 // Pointer to RSD_PTR structure
++  EFI_ACPI_DESCRIPTION_HEADER                   *Rsdt1;                 // Pointer to RSDT table header
++  EFI_ACPI_DESCRIPTION_HEADER                   *Rsdt2;                 // Pointer to RSDT table header
++  EFI_ACPI_DESCRIPTION_HEADER                   *Xsdt;                  // Pointer to XSDT table header
++  EFI_ACPI_1_0_FIXED_ACPI_DESCRIPTION_TABLE     *Fadt1;                 // Pointer to FADT table header
++  EFI_ACPI_2_0_FIXED_ACPI_DESCRIPTION_TABLE     *Fadt2;                 // Pointer to FADT table header
++  EFI_ACPI_1_0_FIRMWARE_ACPI_CONTROL_STRUCTURE  *Facs1;                 // Pointer to FACS table header
++  EFI_ACPI_2_0_FIRMWARE_ACPI_CONTROL_STRUCTURE  *Facs2;                 // Pointer to FACS table header
++  EFI_ACPI_DESCRIPTION_HEADER                   *Dsdt1;                 // Pointer to DSDT table header
++  EFI_ACPI_DESCRIPTION_HEADER                   *Dsdt2;                 // Pointer to DSDT table header
++  UINTN                                         NumberOfTableEntries1;  // Number of ACPI 1.0 tables
++  UINTN                                         NumberOfTableEntries2;  // Number of ACPI 2.0 tables
++  BOOLEAN                                       TablesInstalled1;       // ACPI 1.0 tables published
++  BOOLEAN                                       TablesInstalled2;       // ACPI 2.0 tables published
++  EFI_ACPI_TABLE_PROTOCOL                       AcpiTableProtocol;
++} EFI_XEN_ACPI_TABLE_INSTANCE;
++
++//
++// ACPI table protocol instance containing record macro
++//
++#define EFI_ACPI_TABLE_INSTANCE_FROM_THIS(a) \
++  CR (a, \
++      EFI_XEN_ACPI_TABLE_INSTANCE, \
++      AcpiTableProtocol, \
++      EFI_ACPI_TABLE_SIGNATURE \
++      )
++
++//
++// RSDT 2.0/3.0
++//
++typedef struct {
++  EFI_ACPI_DESCRIPTION_HEADER                   Header;
++  UINT32                                        Entry[1];
++} EFI_ACPI_2_0_RSDT;
++
++//
++// XSDT 2.0/3.0
++//
++typedef struct {
++  EFI_ACPI_DESCRIPTION_HEADER                   Header;
++  UINT64                                        Entry[1];
++} EFI_ACPI_2_0_XSDT;
++
++//
++// Common structure for Secondary System Description Tables (SSDT 2.0),
++// probably including MADT, HPET, TCPA, ...
++//
++typedef struct {
++  LIST_ENTRY                                    Link;
++  UINT32                                        Signature;
++  UINT32                                        Length;
++  UINTN                                         XenTablePhysicalAddress;
++} EFI_XEN_ACPI_SSDT_2_0_TABLE_LIST;
++
++//
++// Xen ACPI pointer
++//
++typedef struct {
++  EFI_ACPI_1_0_ROOT_SYSTEM_DESCRIPTION_POINTER  *XenRsdp1Ptr;                 // Pointer to Xen RSD_PTR structure
++  EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER  *XenRsdp2Ptr;                 // Pointer to Xen RSD_PTR structure
++  EFI_ACPI_DESCRIPTION_HEADER                   *XenRsdt1Ptr;                 // Pointer to Xen RSDT table header
++  EFI_ACPI_DESCRIPTION_HEADER                   *XenRsdt2Ptr;                 // Pointer to Xen RSDT table header
++  EFI_ACPI_DESCRIPTION_HEADER                   *XenXsdtPtr;                  // Pointer to Xen XSDT table header
++  EFI_ACPI_1_0_FIXED_ACPI_DESCRIPTION_TABLE     *XenFadt1Ptr;                 // Pointer to Xen FADT table header
++  EFI_ACPI_2_0_FIXED_ACPI_DESCRIPTION_TABLE     *XenFadt2Ptr;                 // Pointer to Xen FADT table header
++  EFI_ACPI_1_0_FIRMWARE_ACPI_CONTROL_STRUCTURE  *XenFacs1Ptr;                 // Pointer to Xen FACS table header
++  EFI_ACPI_2_0_FIRMWARE_ACPI_CONTROL_STRUCTURE  *XenFacs2Ptr;                 // Pointer to Xen FACS table header
++  EFI_ACPI_DESCRIPTION_HEADER                   *XenDsdt1Ptr;                 // Pointer to Xen DSDT table header
++  EFI_ACPI_DESCRIPTION_HEADER                   *XenDsdt2Ptr;                 // Pointer to Xen DSDT table header
++  LIST_ENTRY                                    XenSsdtTableList;             // Link all the Xen SSDT tables
++  UINTN                                         XenNumberOfTableEntries1;     // Number of Xen ACPI 1.0 tables
++  UINTN                                         XenNumberOfTableEntries2;     // Number of Xen ACPI 2.0 tables
++} XEN_ACPI_TABLE_POINTER;
++
++extern XEN_ACPI_TABLE_POINTER      *XenAcpiTablePointerStructure;
++
++/**
++  Entry point of the ACPI table driver.
++  Creates and initializes an instance of the ACPI Table
++  Protocol and installs it on a new handle.
++
++  @return EFI_SUCCESS           Driver initialized successfully.
++  @return EFI_LOAD_ERROR        Failed to Initialize or has been loaded.
++
++**/
++EFI_STATUS
++EFIAPI
++DetectXenAcpi (
++  VOID
++  );
++
++#endif
+Index: OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf
+===================================================================
+--- OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf	(revision 0)
++++ OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf	(revision 0)
+@@ -0,0 +1,66 @@
++## @file
++#  ACPI Platform Driver. Publish Xen ACPI Table inside OVMF. Support both Xen and QEMU.
++#
++#  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++#
++#  This program and the accompanying materials
++#  are licensed and made available under the terms and conditions of the BSD License
++#  which accompanies this distribution.  The full text of the license may be found at
++#  http://opensource.org/licenses/bsd-license.php
++#  
++#  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++#  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++#  
++##
++
++[Defines]
++  INF_VERSION                    = 0x00010005
++  BASE_NAME                      = AcpiPlatform
++  FILE_GUID                      = 43df49bc-4e5c-47f2-af8d-bcc0e9725343
++  MODULE_TYPE                    = DXE_DRIVER
++  VERSION_STRING                 = 1.0
++  ENTRY_POINT                    = AcpiPlatformEntryPoint
++
++#
++# The following information is for reference only and not required by the build tools.
++#
++#  VALID_ARCHITECTURES           = IA32 X64 IPF EBC
++#
++
++[Sources]
++  AcpiPlatform.h
++  AcpiPlatform.c
++  XenAcpiSupport.c
++
++[Packages]
++  MdePkg/MdePkg.dec
++  MdeModulePkg/MdeModulePkg.dec
++  OvmfPkg/OvmfPkg.dec
++
++[LibraryClasses]
++  UefiLib
++  DxeServicesLib
++  PcdLib
++  BaseMemoryLib
++  DebugLib
++  UefiBootServicesTableLib
++  UefiDriverEntryPoint
++  MemoryAllocationLib
++  BaseLib
++  HobLib
++
++[Guids]
++  gEfiAcpi10TableGuid                           # ALWAYS_CONSUMED
++  gEfiAcpiTableGuid
++  gEfiXenInfoGuid
++
++[Protocols]
++  gEfiAcpiTableProtocolGuid                     # PROTOCOL ALWAYS_CONSUMED
++#  gEfiDxeSmmReadyToLockProtocolGuid             # PROTOCOL ALWAYS_CONSUMED
++
++[Pcd]
++  gEfiMdeModulePkgTokenSpaceGuid.PcdAcpiTableStorageFile
++
++[Depex]
++  gEfiAcpiTableProtocolGuid
++
+Index: OvmfPkg/PlatformPei/Platform.c
+===================================================================
+--- OvmfPkg/PlatformPei/Platform.c	(revision 12068)
++++ OvmfPkg/PlatformPei/Platform.c	(working copy)
+@@ -1,7 +1,9 @@
+ /**@file
+   Platform PEI driver
+ 
+-  Copyright (c) 2006 - 2010, Intel Corporation. All rights reserved.<BR>
++  Copyright (c) 2006 - 2011, Intel Corporation. All rights reserved.<BR>
++  Copyright (c) 2011, Andrei Warkentin <andreiw@motorola.com>
++
+   This program and the accompanying materials
+   are licensed and made available under the terms and conditions of the BSD License
+   which accompanies this distribution.  The full text of the license may be found at
+@@ -73,6 +75,22 @@
+     );
+ }
+ 
++VOID
++AddReservedMemoryBaseSizeHob (
++  EFI_PHYSICAL_ADDRESS        MemoryBase,
++  UINT64                      MemorySize
++  )
++{
++  BuildResourceDescriptorHob (
++    EFI_RESOURCE_MEMORY_RESERVED,
++      EFI_RESOURCE_ATTRIBUTE_PRESENT     |
++      EFI_RESOURCE_ATTRIBUTE_INITIALIZED |
++      EFI_RESOURCE_ATTRIBUTE_UNCACHEABLE |
++      EFI_RESOURCE_ATTRIBUTE_TESTED,
++    MemoryBase,
++    MemorySize
++    );
++}
+ 
+ VOID
+ AddIoMemoryRangeHob (
+@@ -164,19 +182,19 @@
+   //
+   BuildResourceDescriptorHob (
+     EFI_RESOURCE_IO,
+-      EFI_RESOURCE_ATTRIBUTE_PRESENT     |
+-      EFI_RESOURCE_ATTRIBUTE_INITIALIZED,
+-    0x1000,
+-    0xF000
++    EFI_RESOURCE_ATTRIBUTE_PRESENT     |
++    EFI_RESOURCE_ATTRIBUTE_INITIALIZED,
++    0xC000,
++    0x4000
+     );
+ 
+   //
+   // Add PCI MMIO space available to PCI resource allocations
+   //
+   if (TopOfMemory < BASE_2GB) {
+-    AddIoMemoryBaseSizeHob (BASE_2GB, 0xFEC00000 - BASE_2GB);
++    AddIoMemoryBaseSizeHob (BASE_2GB, 0xFC000000 - BASE_2GB);
+   } else {
+-    AddIoMemoryBaseSizeHob (TopOfMemory, 0xFEC00000 - TopOfMemory);
++    AddIoMemoryBaseSizeHob (TopOfMemory, 0xFC000000 - TopOfMemory);
+   }
+ 
+   //
+@@ -198,6 +216,7 @@
+ 
+ VOID
+ MiscInitialization (
++  BOOLEAN Xen
+   )
+ {
+   //
+@@ -210,10 +229,12 @@
+   //
+   BuildCpuHob (36, 16);
+ 
+-  //
+-  // Set the PM I/O base address to 0x400
+-  //
+-  PciAndThenOr32 (PCI_LIB_ADDRESS (0, 1, 3, 0x40), (UINT32) ~0xfc0, 0x400);
++  if (!Xen) {
++    //
++    // Set the PM I/O base address to 0x400
++    //
++    PciAndThenOr32 (PCI_LIB_ADDRESS (0, 1, 3, 0x40), (UINT32) ~0xfc0, 0x400);
++  }
+ }
+ 
+ 
+@@ -294,21 +315,30 @@
+   IN CONST EFI_PEI_SERVICES     **PeiServices
+   )
+ {
++  EFI_STATUS            Status;
+   EFI_PHYSICAL_ADDRESS  TopOfMemory;
++  BOOLEAN               Xen;
+ 
+-  DEBUG ((EFI_D_ERROR, "Platform PEIM Loaded\n"));
+-
+   DebugDumpCmos ();
+ 
+   TopOfMemory = MemDetect ();
+ 
++  Status = InitializeXen ();
++  Xen = EFI_ERROR (Status) ? FALSE : TRUE;
++
++  DEBUG ((EFI_D_ERROR, "Platform PEIM Loaded\n"));
++
++  //DebugDumpCmos ();
++
++  //TopOfMemory = MemDetect ();
++
+   ReserveEmuVariableNvStore ();
+ 
+   PeiFvInitialization ();
+ 
+   MemMapInitialization (TopOfMemory);
+ 
+-  MiscInitialization ();
++  MiscInitialization (Xen);
+ 
+   BootModeInitialization ();
+ 
+Index: OvmfPkg/PlatformPei/Platform.h
+===================================================================
+--- OvmfPkg/PlatformPei/Platform.h	(revision 12068)
++++ OvmfPkg/PlatformPei/Platform.h	(working copy)
+@@ -1,7 +1,7 @@
+ /** @file
+   Platform PEI module include file.
+ 
+-  Copyright (c) 2006 - 2007, Intel Corporation. All rights reserved.<BR>
++  Copyright (c) 2006 - 2011, Intel Corporation. All rights reserved.<BR>
+   This program and the accompanying materials
+   are licensed and made available under the terms and conditions of the BSD License
+   which accompanies this distribution.  The full text of the license may be found at
+@@ -46,6 +46,12 @@
+   );
+ 
+ VOID
++AddReservedMemoryBaseSizeHob (
++  EFI_PHYSICAL_ADDRESS        MemoryBase,
++  UINT64                      MemorySize
++  );
++
++VOID
+ AddUntestedMemoryRangeHob (
+   EFI_PHYSICAL_ADDRESS        MemoryBase,
+   EFI_PHYSICAL_ADDRESS        MemoryLimit
+@@ -61,4 +67,9 @@
+   VOID
+   );
+ 
++EFI_STATUS
++InitializeXen (
++  VOID
++  );
++
+ #endif // _PLATFORM_PEI_H_INCLUDED_
+Index: OvmfPkg/PlatformPei/Xen.c
+===================================================================
+--- OvmfPkg/PlatformPei/Xen.c	(revision 0)
++++ OvmfPkg/PlatformPei/Xen.c	(revision 0)
+@@ -0,0 +1,144 @@
++/**@file
++  Xen Platform PEI support
++
++  Copyright (c) 2006 - 2011, Intel Corporation. All rights reserved.<BR>
++  Copyright (c) 2011, Andrei Warkentin <andreiw@motorola.com>
++
++  This program and the accompanying materials
++  are licensed and made available under the terms and conditions of the BSD License
++  which accompanies this distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++//
++// The package level header files this module uses
++//
++#include <PiPei.h>
++
++//
++// The Library classes this module consumes
++//
++#include <Library/DebugLib.h>
++#include <Library/HobLib.h>
++#include <Library/MemoryAllocationLib.h>
++#include <Library/PcdLib.h>
++#include <Guid/XenInfo.h>
++
++#include "Platform.h"
++
++EFI_XEN_INFO mXenInfo;
++
++
++/**
+
++  Connects to the Hypervisor.
++ 
++  @param  XenLeaf     CPUID index used to connect.
++
++  @return EFI_STATUS
++
++**/
++EFI_STATUS
++XenConnect (
++  UINT32 XenLeaf
++  )
++{
++  UINT32 Index;
++  UINT32 TransferReg;
++  UINT32 TransferPages;
++  UINT32 XenVersion;
++
++  AsmCpuid (XenLeaf + 2, &TransferPages, &TransferReg, NULL, NULL);
++  mXenInfo.HyperPages = AllocatePages (TransferPages);
++  if (!mXenInfo.HyperPages) {
++    return EFI_OUT_OF_RESOURCES;
++  }
++
++  for (Index = 0; Index < TransferPages; Index++) {
++    AsmWriteMsr64 (TransferReg,
++                   (UINTN) mXenInfo.HyperPages +
++                   (Index << EFI_PAGE_SHIFT) + Index);
++  }
++
++  AsmCpuid (XenLeaf + 1, &XenVersion, NULL, NULL, NULL);
++  DEBUG ((EFI_D_ERROR, "Detected Xen version %d.%d\n",
++          XenVersion >> 16, XenVersion & 0xFFFF));
++  mXenInfo.VersionMajor = XenVersion >> 16;
++  mXenInfo.VersionMinor = XenVersion & 0xFFFF;
++
++  /* TBD: Locate hvm_info and reserve it away. */
++  mXenInfo.HvmInfo = NULL;
++
++  BuildGuidDataHob (
++    &gEfiXenInfoGuid,
++    &mXenInfo,
++    sizeof(mXenInfo)
++    );
++
++  return EFI_SUCCESS;
++}
++
++/**
++  Figures out if we are running inside Xen HVM.
++
++  @return UINT32     CPUID index used to connect to HV.
++
++**/
++UINT32
++XenDetect (
++  VOID
++  )
++{
++
++  UINT32 XenLeaf;
++  UINT8 Signature[13];
++
++  for (XenLeaf = 0x40000000; XenLeaf < 0x40010000; XenLeaf += 0x100) {
++    AsmCpuid (XenLeaf, NULL, (UINT32 *) &Signature[0],
++              (UINT32 *) &Signature[4],
++              (UINT32 *) &Signature[8]);
++    Signature[12] = '\0';
++
++    if (!AsciiStrCmp ((CHAR8 *) Signature, "XenVMMXenVMM")) {
++      return XenLeaf;
++    }
++  }
++
++  return 0;
++}
++
++/**
++  Perform Xen PEI initialization.
++
++  @return EFI_SUCCESS     Xen initialized successfully
++  @return EFI_NOT_FOUND   Not running under Xen
++
++**/
++EFI_STATUS
++InitializeXen (
++  VOID
++  )
++{
++  UINT32 XenLeaf;
++
++  XenLeaf = XenDetect ();
++
++  if (XenLeaf == 0) {
++    return EFI_NOT_FOUND;
++  }
++
++  DEBUG ((EFI_D_INFO, "Xen was detected\n"));
++
++  XenConnect (XenLeaf);
++
++  //
++  // Reserve away HVMLOADER reserved memory [0xFC000000,0xFD000000).
++  // This needs to match HVMLOADER RESERVED_MEMBASE/RESERVED_MEMSIZE.
++  //
++  AddReservedMemoryBaseSizeHob (0xFC000000, 0x1000000);
++
++  return EFI_SUCCESS;
++}
+Index: OvmfPkg/PlatformPei/PlatformPei.inf
+===================================================================
+--- OvmfPkg/PlatformPei/PlatformPei.inf	(revision 12068)
++++ OvmfPkg/PlatformPei/PlatformPei.inf	(working copy)
+@@ -2,7 +2,7 @@
+ #  Platform PEI driver
+ #
+ #  This module provides platform specific function to detect boot mode.
+-#  Copyright (c) 2006 - 2010, Intel Corporation. All rights reserved.<BR>
++#  Copyright (c) 2006 - 2011, Intel Corporation. All rights reserved.<BR>
+ #
+ #  This program and the accompanying materials
+ #  are licensed and made available under the terms and conditions of the BSD License
+@@ -33,6 +33,7 @@
+   Fv.c
+   MemDetect.c
+   Platform.c
++  Xen.c
+ 
+ [Packages]
+   MdePkg/MdePkg.dec
+@@ -41,6 +42,7 @@
+ 
+ [Guids]
+   gEfiMemoryTypeInformationGuid
++  gEfiXenInfoGuid
+ 
+ [LibraryClasses]
+   DebugLib
+Index: OvmfPkg/Include/Protocol/Hypercall.h
+===================================================================
+--- OvmfPkg/Include/Protocol/Hypercall.h	(revision 0)
++++ OvmfPkg/Include/Protocol/Hypercall.h	(revision 0)
+@@ -0,0 +1,436 @@
++/** @file
++
++  XEN_HV_PROTOCOL protocol allows consumers to log SMBIOS data records, and enables the producer 
++  to create the SMBIOS tables for a platform.
++
++  Copyright (c) 2006 - 2008, Intel Corporation. All rights reserved.<BR>
++  This program and the accompanying materials                          
++  are licensed and made available under the terms and conditions of the BSD License         
++  which accompanies this distribution.  The full text of the license may be found at        
++  http://opensource.org/licenses/bsd-license.php                                            
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,                     
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.             
++
++**/
++
++#ifndef _XEN_HV_PROTOCOL_H_
++#define _XEN_HV_PROTOCOL_H_
++
++#define EFI_XEN_HV_PROTOCOL_GUID \
++    { 0x90d9933f, 0x0f3f, 0x4027, { 0xaa, 0x7c, 0x05, 0x44, 0xb6, 0x62, 0x38, 0x5f }}
++
++//
++// HYPERCALLS
++//
++#define HYPERVISOR_SET_TRAP_TABLE        0
++#define HYPERVISOR_MMU_UPDATE            1
++#define HYPERVISOR_SET_GDT               2
++#define HYPERVISOR_STACK_SWITCH          3
++#define HYPERVISOR_SET_CALLBACKS         4
++#define HYPERVISOR_FPU_TASKSWITCH        5
++#define HYPERVISOR_SCHED_OP_COMPAT       6 /* compat since 0x00030101 */
++#define HYPERVISOR_PLATFORM_OP           7
++#define HYPERVISOR_SET_DEBUGREG          8
++#define HYPERVISOR_GET_DEBUGREG          9
++#define HYPERVISOR_UPDATE_DESCRIPTOR    10
++#define HYPERVISOR_MEMORY_OP            12
++#define HYPERVISOR_MULTICALL            13
++#define HYPERVISOR_UPDATE_VA_MAPPING    14
++#define HYPERVISOR_SET_TIMER_OP         15
++#define HYPERVISOR_EVENT_CHANNEL_OP_COMPAT 16 /* compat since 0x00030202 */
++#define HYPERVISOR_XEN_VERSION          17
++#define HYPERVISOR_CONSOLE_IO           18
++#define HYPERVISOR_PHYSDEV_OP_COMPAT    19 /* compat since 0x00030202 */
++#define HYPERVISOR_GRANT_TABLE_OP       20
++#define HYPERVISOR_VM_ASSIST            21
++#define HYPERVISOR_UPDATE_VA_MAPPING_OTHERDOMAIN 22
++#define HYPERVISOR_IRET                 23 /* x86 only */
++#define HYPERVISOR_VCPU_OP              24
++#define HYPERVISOR_SET_SEGMENT_BASE     25 /* x86/64 only */
++#define HYPERVISOR_MMUEXT_OP            26
++#define HYPERVISOR_XSM_OP               27
++#define HYPERVISOR_NMI_OP               28
++#define HYPERVISOR_SCHED_OP             29
++#define HYPERVISOR_CALLBACK_OP          30
++#define HYPERVISOR_XENOPROF_OP          31
++#define HYPERVISOR_EVENT_CHANNEL_OP     32
++#define HYPERVISOR_PHYSDEV_OP           33
++#define HYPERVISOR_HVM_OP               34
++#define HYPERVISOR_SYSCTL               35
++#define HYPERVISOR_DOMCTL               36
++#define HYPERVISOR_KEXEC_OP             37
++#define HYPERVISOR_TMEM_OP              38
++
++/* Architecture-specific hypercall definitions. */
++#define HYPERVISOR_ARCH_0               48
++#define HYPERVISOR_ARCH_1               49
++#define HYPERVISOR_ARCH_2               50
++#define HYPERVISOR_ARCH_3               51
++#define HYPERVISOR_ARCH_4               52
++#define HYPERVISOR_ARCH_5               53
++#define HYPERVISOR_ARCH_6               54
++#define HYPERVISOR_ARCH_7               55
++
++typedef struct _EFI_XEN_HV_PROTOCOL EFI_XEN_HV_PROTOCOL;
++
++/**
++  Hypercall methods.
++
++  @param[in]    TODO parameters description
++  @param[in]    TODO parameters description
++
++**/
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_SET_TRAP_TABLE)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_MMU_UPDATE )(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_SET_GDT)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_STACK_SWITCH)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_SET_CALLBACKS)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_FPU_TASKSWITCH)(
++  IN UINTN      Cmd
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_SCHED_OP_COMPAT)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_PLATFORM_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_SET_DEBUGREG)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_GET_DEBUGREG)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_UPDATE_DESCRIPTOR)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_MEMORY_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_MULTICALL)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_UPDATE_VA_MAPPING)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_SET_TIMER_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_EVENT_CHANNEL_OP_COMPAT)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_XEN_VERSION)(
++  IN UINTN      Cmd,
++  IN VOID       *Arg
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_CONSOLE_IO)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_PHYSDEV_OP_COMPAT)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_GRANT_TABLE_OP)(
++  IN UINTN      Cmd,
++  IN VOID       *Uop,
++  IN UINTN      Count
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_VM_ASSIST)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_UPDATE_VA_MAPPING_OTHERDOMAIN)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_IRET)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_VCPU_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_SET_SEGMENT_BASE)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_MMUEXT_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_XSM_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_NMI_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_SCHED_OP)(
++  IN UINTN      Cmd,
++  IN VOID       *Arg
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_CALLBACK_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_XENOPROF_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_EVENT_CHANNEL_OP)(
++  IN UINTN      Cmd,
++  IN VOID       *Arg
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_PHYSDEV_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_HVM_OP)(
++  IN UINTN      Cmd,
++  IN VOID       *Arg
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_SYSCTL)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_DOMCTL)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_KEXEC_OP)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_TMEM_OP)(
++  //TODO Add parameters
++);
++
++//
++// Architecture-specific hypercall definitions.
++//
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_ARCH_0)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_ARCH_1)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_ARCH_2)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_ARCH_3)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_ARCH_4)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_ARCH_5)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_ARCH_6)(
++  //TODO Add parameters
++);
++
++typedef
++EFI_STATUS
++(EFIAPI *EFI_HYPERVISOR_ARCH_7)(
++  //TODO Add parameters
++);
++
++
++struct _EFI_XEN_HV_PROTOCOL {
++  ///
++  /// Protocol methods are hypercalls
++  ///
++
++  EFI_HYPERVISOR_SET_TRAP_TABLE        HypervisorSetTrapTable;
++  EFI_HYPERVISOR_MMU_UPDATE            HypervisorMmuUpdate;
++  EFI_HYPERVISOR_SET_GDT               HypervisorSetGdt;
++  EFI_HYPERVISOR_STACK_SWITCH          HypervisorStackSwitch;
++  EFI_HYPERVISOR_SET_CALLBACKS         HypervisorSetCallbacks;
++  EFI_HYPERVISOR_FPU_TASKSWITCH        HypervisorFpuTaskswitch;
++  EFI_HYPERVISOR_SCHED_OP_COMPAT       HypervisorSchedOpCompat;
++  EFI_HYPERVISOR_PLATFORM_OP           HypervisorPlatformOp;
++  EFI_HYPERVISOR_SET_DEBUGREG          HypervisorSetDebugreg;
++  EFI_HYPERVISOR_GET_DEBUGREG          HypervisorGetDebugreg;
++  EFI_HYPERVISOR_UPDATE_DESCRIPTOR     HypervisorUpdateDescriptor;
++  EFI_HYPERVISOR_MEMORY_OP             HypervisorMemoryOp;
++  EFI_HYPERVISOR_MULTICALL             HypervisorMulticall;
++  EFI_HYPERVISOR_UPDATE_VA_MAPPING     HypervisorUpdateVaMapping;
++  EFI_HYPERVISOR_SET_TIMER_OP          HypervisorSetTimerOp;
++  EFI_HYPERVISOR_EVENT_CHANNEL_OP_COMPAT HypervisorEventChannelOpCompat;
++  EFI_HYPERVISOR_XEN_VERSION           HypervisorXenVersion;
++  EFI_HYPERVISOR_CONSOLE_IO            HypervisorConsoleIo;
++  EFI_HYPERVISOR_PHYSDEV_OP_COMPAT     HypervisorPhysdevOpCompat;
++  EFI_HYPERVISOR_GRANT_TABLE_OP        HypervisorGrantTableOp;
++  EFI_HYPERVISOR_VM_ASSIST             HypervisorVmAssist;
++  EFI_HYPERVISOR_UPDATE_VA_MAPPING_OTHERDOMAIN HypervisorUpdateVaMappingOtherdomain;
++  EFI_HYPERVISOR_IRET                  HypervisorIret;
++  EFI_HYPERVISOR_VCPU_OP               HypervisorVcpuOp;
++  EFI_HYPERVISOR_SET_SEGMENT_BASE      HypervisorSetSegmentBase;
++  EFI_HYPERVISOR_MMUEXT_OP             HypervisorMmuextOp;
++  EFI_HYPERVISOR_XSM_OP                HypervisorXsmOp;
++  EFI_HYPERVISOR_NMI_OP                HypervisorNmiOp;
++  EFI_HYPERVISOR_SCHED_OP              HypervisorSchedOp;
++  EFI_HYPERVISOR_CALLBACK_OP           HypervisorCallbackOp;
++  EFI_HYPERVISOR_XENOPROF_OP           HypervisorXenoprofOp;
++  EFI_HYPERVISOR_EVENT_CHANNEL_OP      HypervisorEventChannelOp;
++  EFI_HYPERVISOR_PHYSDEV_OP            HypervisorPhysdevOp;
++  EFI_HYPERVISOR_HVM_OP                HypervisorHvmOp;
++  EFI_HYPERVISOR_SYSCTL                HypervisorSysctl;
++  EFI_HYPERVISOR_DOMCTL                HypervisorDomctl;
++  EFI_HYPERVISOR_KEXEC_OP              HypervisorKexecOp;
++  EFI_HYPERVISOR_TMEM_OP               HypervisorTmemOp;
++
++  EFI_HYPERVISOR_ARCH_0                HypervisorArch0;
++  EFI_HYPERVISOR_ARCH_1                HypervisorArch1;
++  EFI_HYPERVISOR_ARCH_2                HypervisorArch2;
++  EFI_HYPERVISOR_ARCH_3                HypervisorArch3;
++  EFI_HYPERVISOR_ARCH_4                HypervisorArch4;
++  EFI_HYPERVISOR_ARCH_5                HypervisorArch5;
++  EFI_HYPERVISOR_ARCH_6                HypervisorArch6;
++  EFI_HYPERVISOR_ARCH_7                HypervisorArch7;
++
++  ///
++  /// Hypervisor major version.
++  ///
++  UINT16 MajorVersion;
++  ///
++  /// Hypervisor minor version.
++  ///
++  UINT16 MinorVersion;
++};
++
++extern EFI_GUID gEfiXenHvProtocolGuid;
++
++#endif // _XEN_HV_PROTOCOL_H_
++
+Index: OvmfPkg/Include/Library/XenLib.h
+===================================================================
+--- OvmfPkg/Include/Library/XenLib.h	(revision 0)
++++ OvmfPkg/Include/Library/XenLib.h	(revision 0)
+@@ -0,0 +1,37 @@
++/** @file
++
++  XEN_HV_PROTOCOL protocol allows consumers to log SMBIOS data records, and enables the producer 
++  to create the SMBIOS tables for a platform.
++
++  Copyright (c) 2006 - 2008, Intel Corporation. All rights reserved.<BR>
++  This program and the accompanying materials                          
++  are licensed and made available under the terms and conditions of the BSD License         
++  which accompanies this distribution.  The full text of the license may be found at        
++  http://opensource.org/licenses/bsd-license.php                                            
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,                     
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.             
++
++**/
++
++#ifndef _XEN_LIB_H_
++#define _XEN_LIB_H_
++
++
++/*
++* For Xen Version Hypercall
++*/
++#define XENVER_VERSION         0
++/* arg == xen_extraversion_t. */
++#define XENVER_EXTRAVERSION    1
++typedef CHAR8 XenExtraversion[16];
++
++
++
++
++
++
++
++
++#endif
++
+Index: OvmfPkg/Include/Guid/XenInfo.h
+===================================================================
+--- OvmfPkg/Include/Guid/XenInfo.h	(revision 12068)
++++ OvmfPkg/Include/Guid/XenInfo.h	(working copy)
+@@ -40,3 +40,45 @@
+ extern EFI_GUID gEfiXenInfoGuid;
+ 
+ #endif
++/** @file
++  XenInfo HOB passed by PEI into DXE.
++
++Copyright (c) 2011, Andrei Warkentin <andreiw@motorola.com>
++This program and the accompanying materials are licensed and made available under
++the terms and conditions of the BSD License that accompanies this distribution.
++The full text of the license may be found at
++http://opensource.org/licenses/bsd-license.php.
++
++THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#ifndef __XEN_INFO_H__
++#define __XEN_INFO_H__
++
++#define EFI_XEN_INFO_GUID \
++    { 0xd3b46f3b, 0xd441, 0x1244, {0x9a, 0x12, 0x0, 0x12, 0x27, 0x3f, 0xc1, 0x4d } }
++
++typedef struct {
++  ///
++  /// Beginning of the hypercall page.
++  ///
++  VOID *HyperPages;
++  ///
++  /// Location of the hvm_info page.
++  ///
++  VOID *HvmInfo;
++  ///
++  /// Hypervisor major version.
++  ///
++  UINT16 VersionMajor;
++  ///
++  /// Hypervisor minor version.
++  ///
++  UINT16 VersionMinor;
++} EFI_XEN_INFO;
++
++extern EFI_GUID gEfiXenInfoGuid;
++
++#endif
+Index: OvmfPkg/OvmfPkgX64.dsc
+===================================================================
+--- OvmfPkg/OvmfPkgX64.dsc	(revision 12068)
++++ OvmfPkg/OvmfPkgX64.dsc	(working copy)
+@@ -300,9 +300,15 @@
+   }
+ 
+   MdeModulePkg/Core/RuntimeDxe/RuntimeDxe.inf
++  #
++  # Xen PV Dxe and Test
++  #
++  OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.inf
++  OvmfPkg/HypercallTestDxe/HypercallTestDxe.inf
+   MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
+   MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
+   MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
++  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
+   PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
+   UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
+   UefiCpuPkg/CpuDxe/CpuDxe.inf
+@@ -370,7 +376,7 @@
+   # ACPI Support
+   #
+   MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
+-  MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
++  OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf
+   OvmfPkg/AcpiTables/AcpiTables.inf
+ 
+   #
+Index: OvmfPkg/HypercallTestDxe/HypercallTestDxe.inf
+===================================================================
+--- OvmfPkg/HypercallTestDxe/HypercallTestDxe.inf	(revision 0)
++++ OvmfPkg/HypercallTestDxe/HypercallTestDxe.inf	(revision 0)
+@@ -0,0 +1,56 @@
++## @file
++#  Xen PV test.
++#
++#  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++#
++#  This program and the accompanying materials
++#  are licensed and made available under the terms and conditions of the BSD License
++#  which accompanies this distribution. The full text of the license may be found at
++#  http://opensource.org/licenses/bsd-license.php
++#  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++#  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++#
++#
++##
++
++[Defines]
++  INF_VERSION                    = 0x00010005
++  BASE_NAME                      = HypercallTestDxe
++  FILE_GUID                      = 9169e45e-5db7-4b5c-9d1e-016fec787c2c
++  MODULE_TYPE                    = DXE_DRIVER
++  VERSION_STRING                 = 1.0
++
++  ENTRY_POINT                    = XenParaVirtualizationTestEntry
++
++#
++# The following information is for reference only and not required by the build tools.
++#
++#  VALID_ARCHITECTURES           = IA32 X64 IPF EBC
++#
++
++[Sources]
++  HypercallTestDxe.h
++  HypercallTestDxe.c
++
++[Packages]
++  MdePkg/MdePkg.dec
++  OvmfPkg/OvmfPkg.dec
++
++[LibraryClasses]
++  UefiDriverEntryPoint
++  UefiBootServicesTableLib
++  DebugLib
++  HobLib
++
++  BaseLib
++
++[Protocols]
++  gEfiXenHvProtocolGuid                       # PROTOCOL ALWAYS_PRODUCED
++
++[Guids]
++  gEfiXenInfoGuid
++
++[FixedPcd]
++
++[Depex]
++  TRUE
+Index: OvmfPkg/HypercallTestDxe/HypercallTestDxe.c
+===================================================================
+--- OvmfPkg/HypercallTestDxe/HypercallTestDxe.c	(revision 0)
++++ OvmfPkg/HypercallTestDxe/HypercallTestDxe.c	(revision 0)
+@@ -0,0 +1,149 @@
++/** @file
++  Xen PV test Dxe.
++
++  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++  This program and the accompanying materials                          
++  are licensed and made available under the terms and conditions of the BSD License         
++  which accompanies this distribution.  The full text of the license may be found at        
++  http://opensource.org/licenses/bsd-license.php                                            
++                                                                                          
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,                     
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.             
++
++**/
++
++#include "HypercallTestDxe.h"
++
++//
++// SMBIOS entry point structure
++//
++EFI_XEN_HV_PROTOCOL         *gXenHypercall;
++
++
++/**
++  Print String (For Hypercall test)
++**/
++INTN
++EFIAPI
++PrintAsciiStr (
++  IN      CONST CHAR8               *FirstString,
++  IN      UINTN                     Length
++  )
++{
++  ASSERT (AsciiStrSize (FirstString));
++
++  while ((*FirstString != '\0') && (Length > 0)) {
++    DEBUG ((EFI_D_INFO, "%c", *FirstString));
++    FirstString++;
++    Length--;
++  }
++
++  DEBUG ((EFI_D_INFO, "\n"));
++  return EFI_SUCCESS;
++}
++
++
++/**
++  Test Xen Hypercall. You can use hypercall in this function.
++
++**/
++EFI_STATUS
++EFIAPI
++HypercallTestFunc (
++  VOID
++  )
++{
++  EFI_STATUS         Status;
++  UINT32             Major, Minor;
++  XenExtraversion    ExtraVersion;
++
++  Major = 0; Minor = 0;
++  Minor = gXenHypercall->HypervisorXenVersion(XENVER_VERSION, 0);
++  Major = Minor >> 16;
++  Minor &= 0xFFFF;
++  DEBUG ((EFI_D_INFO, "[TestInfo_CallHypercallFromOtherDXE]OVMF is running on Xen version: %d.%d\n", Major, Minor));
++
++  Status = gXenHypercall->HypervisorXenVersion(XENVER_EXTRAVERSION, ExtraVersion);
++  ASSERT_EFI_ERROR (Status);
++  DEBUG ((EFI_D_INFO, "[TestInfo_CallHypercallFromOtherDXE]Detected Xen "));
++  PrintAsciiStr(ExtraVersion, 16);
++
++  return EFI_SUCCESS;
++}
++
++/**
++  Initialize the Xen Hypercall methods. Check if we are in Xen HVM firstly.
++
++  @retval EFI_SUCCESS    Smbios protocol installed
++  @retval Other          No protocol installed, unload driver.
++
++**/
++EFI_STATUS
++EFIAPI
++HypercallInitialize (
++  VOID
++  )
++{
++  EFI_STATUS                Status;
++  EFI_HOB_GUID_TYPE         *GuidHob;
++
++  //
++  // See if a XenInfo HOB is available
++  //
++  GuidHob = GetFirstGuidHob (&gEfiXenInfoGuid);
++  if (GuidHob == NULL) {
++    return EFI_NOT_FOUND;
++  }
++  //
++  // We are running inside Xen HVM. Then, find the Xen EFI_XEN_HV_PROTOCOL.
++  //
++  Status = gBS->LocateProtocol (
++                  &gEfiXenHvProtocolGuid,
++                  NULL,
++                  (VOID**)&gXenHypercall
++                  );
++  if (EFI_ERROR (Status)) {
++    return Status;
++  }
++  
++  return EFI_SUCCESS;
++}
++
++/**
++  Stub Dxe.
++
++  @param ImageHandle     Module's image handle
++  @param SystemTable     Pointer of EFI_SYSTEM_TABLE
++
++  @retval EFI_SUCCESS    Smbios protocol installed
++  @retval Other          No protocol installed, unload driver.
++
++**/
++EFI_STATUS
++EFIAPI
++XenParaVirtualizationTestEntry (
++  IN EFI_HANDLE           ImageHandle,
++  IN EFI_SYSTEM_TABLE     *SystemTable
++  )
++{
++  EFI_STATUS                Status;
++
++  //
++  // Initialize the Xen Hypercall.
++  //
++  Status = HypercallInitialize();
++  if (EFI_ERROR (Status)) {
++      DEBUG ((EFI_D_ERROR, "HVM hypercall initialization failed!\n"));
++      return Status;
++  }
++ 
++  //
++  // Other code here
++  //
++  HypercallTestFunc();
++
++
++  return EFI_SUCCESS;
++}
++
+Index: OvmfPkg/HypercallTestDxe/HypercallTestDxe.h
+===================================================================
+--- OvmfPkg/HypercallTestDxe/HypercallTestDxe.h	(revision 0)
++++ OvmfPkg/HypercallTestDxe/HypercallTestDxe.h	(revision 0)
+@@ -0,0 +1,32 @@
++/** @file
++  Xen PV test Dxe.
++
++  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++  This program and the accompanying materials                          
++  are licensed and made available under the terms and conditions of the BSD License         
++  which accompanies this distribution.  The full text of the license may be found at        
++  http://opensource.org/licenses/bsd-license.php                                            
++                                                                                          
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,                     
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.             
++
++**/
++
++#ifndef _HYPERCALL_TEST_DXE_H_
++#define _HYPERCALL_TEST_DXE_H_
++
++#include <PiDxe.h>
++
++#include <Protocol/Hypercall.h>
++#include <Guid/XenInfo.h>
++#include <Library/HobLib.h>
++#include <Library/DebugLib.h>
++#include <Library/UefiBootServicesTableLib.h>
++#include <Library/UefiDriverEntryPoint.h>
++#include <Library/XenLib.h>
++
++#include <Library/BaseLib.h>
++
++#endif
++
+Index: OvmfPkg/OvmfPkgIa32.fdf
+===================================================================
+--- OvmfPkg/OvmfPkgIa32.fdf	(revision 12068)
++++ OvmfPkg/OvmfPkgIa32.fdf	(working copy)
+@@ -150,9 +150,15 @@
+ INF  MdeModulePkg/Universal/PCD/Dxe/Pcd.inf
+ 
+ INF  MdeModulePkg/Core/RuntimeDxe/RuntimeDxe.inf
++#
++# Xen PV Dxe and Test
++#
++INF  OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.inf
++INF  OvmfPkg/HypercallTestDxe/HypercallTestDxe.inf
+ INF  MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
+ INF  MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
+ INF  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
++INF  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
+ INF  PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
+ INF  UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
+ INF  UefiCpuPkg/CpuDxe/CpuDxe.inf
+@@ -199,7 +205,7 @@
+ INF  IntelFrameworkModulePkg/Bus/Isa/IsaFloppyDxe/IsaFloppyDxe.inf
+ 
+ INF  MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
+-INF  MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
++INF  OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf
+ INF  RuleOverride=ACPITABLE OvmfPkg/AcpiTables/AcpiTables.inf
+ 
+ INF  RuleOverride = BINARY FatBinPkg/EnhancedFatDxe/Fat.inf
+Index: OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.h
+===================================================================
+--- OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.h	(revision 0)
++++ OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.h	(revision 0)
+@@ -0,0 +1,92 @@
++/** @file
++
++Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++This program and the accompanying materials
++are licensed and made available under the terms and conditions of the BSD License
++which accompanies this distribution.  The full text of the license may be found at
++http://opensource.org/licenses/bsd-license.php
++
++THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#ifndef _PARA_VIRTUALIZATION_H_
++#define _PARA_VIRTUALIZATION_H_
++
++#include <PiDxe.h>
++
++#include <Protocol/Hypercall.h>
++#include <Guid/XenInfo.h>
++#include <Library/HobLib.h>
++#include <Library/DebugLib.h>
++#include <Library/UefiBootServicesTableLib.h>
++#include <Library/UefiDriverEntryPoint.h>
++#include <Library/XenLib.h>
++
++#include <Library/BaseLib.h>
++
++#include "GasketHypercall.h"
++
++/**
++  Get Xen Hypercall page from HOB.
++
++**/
++VOID*
++GetHypercallPage (
++  VOID
++  );
++
++/**
++  Xen Hypercall
++
++**/
++
++/**
++  Xen Hypercall
++
++  @param  Cmd       parameter.
++  @param  Arg       Parameter.
++
++**/
++EFI_STATUS
++EFIAPI
++HypervisorXenVersion (
++  IN UINTN Cmd,
++  IN VOID  *Arg
++  );
++
++EFI_STATUS
++EFIAPI
++HypervisorGrantTableOp(
++  IN UINTN      Cmd,
++  IN VOID       *Uop,
++  IN UINTN      Count
++);
++
++EFI_STATUS
++EFIAPI
++HypervisorSchedOp (
++  IN UINTN      Cmd,
++  IN VOID       *Arg
++  );
++
++EFI_STATUS
++EFIAPI
++HypervisorEventChannelOp (
++  IN UINTN Cmd,
++  IN VOID  *Arg
++  );
++
++EFI_STATUS
++EFIAPI
++HypervisorHvmOp (
++  IN UINTN Cmd,
++  IN VOID  *Arg
++  );
++
++
++
++#endif
++
+Index: OvmfPkg/ParaVirtualizationDxe/X64/GasketHypercall.S
+===================================================================
+--- OvmfPkg/ParaVirtualizationDxe/X64/GasketHypercall.S	(revision 0)
++++ OvmfPkg/ParaVirtualizationDxe/X64/GasketHypercall.S	(revision 0)
+@@ -0,0 +1,93 @@
++#------------------------------------------------------------------------------
++#
++# Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++#
++# This program and the accompanying materials
++# are licensed and made available under the terms and conditions of the BSD License
++# which accompanies this distribution.  The full text of the license may be found at
++# http://opensource.org/licenses/bsd-license.php.
++#
++# THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++# WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++#
++# Module Name:
++#
++#   GasketHypercall.S
++#
++# Abstract:
++#
++#   Hypercall function
++#
++# Notes:
++#
++#------------------------------------------------------------------------------
++
++#------------------------------------------------------------------------------
++#  UINTN
++#  EFIAPI
++#  Hypercall (
++#    IN  VOID   *HypercallPageAddress,  // passed in %rcx
++#    IN  UINTN  HypercallOffset,        // passed in %rdx
++#    IN  UINTN  Arg1,                   // passed in %r8
++#    IN  UINTN  Arg2,                   // passed in %r9
++#    IN  UINTN  Arg3,                   // passed in stack
++#    IN  UINTN  Arg4,                   // passed in stack
++#    IN  UINTN  Arg5,                   // passed in stack
++#    )
++#------------------------------------------------------------------------------
++
++  .text
++
++ASM_GLOBAL ASM_PFX(Hypercall)
++ASM_PFX(Hypercall):
++  pushq   %rbp            // stack frame is for the debugger
++  movq    %rsp, %rbp
++  subq    $16, %rsp       // Allocate space for args on the stack
++
++  pushq   %rsi            // %rsi & %rdi are callee-save in EFI ABI
++  pushq   %rdi
++
++  movq    %rcx, %rax      // Swizzle args
++  addq    %rdx, %rax      // Address of hypercall is in %rax
++
++  movq    %r8,  %rdi      // Move parameters into %rdi,
++  movq    %r9,  %rsi      // %rsi,
++  movq    48(%rbp), %rdx  // %rdx,
++  movq    56(%rbp), %r10  // %r10,
++  movq    64(%rbp), %r8   // %r8
++  movq    %r8,     (%rsp) //
++
++  call    *%rax
++  addq    $16, %rsp
++
++  popq    %rdi            // restore state
++  popq    %rsi
++  popq    %rbp
++  ret                     // return value is in %rax
++
++
++//
++// Hypercall2 is not used.
++//
++ASM_GLOBAL ASM_PFX(Hypercall2)
++ASM_PFX(Hypercall2):
++  pushq   %rbp            // stack frame is for the debugger
++  movq    %rsp, %rbp
++
++  pushq   %rsi            // %rsi & %rdi are callee-save in EFI ABI
++  pushq   %rdi
++
++  movq    %rcx, %rax      // Swizzle args
++  addq    %rdx, %rax      // Address of hypercall is in %rax
++
++  movq    %r8,  %rdi      // Move parameters into %rdi, %rsi
++  movq    %r9,  %rsi
++
++  call    *%rax
++
++  popq    %rdi            // restore state
++  popq    %rsi
++  popq    %rbp
++  ret                     // return value is in %rax
++
++
+Index: OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.inf
+===================================================================
+--- OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.inf	(revision 0)
++++ OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.inf	(revision 0)
+@@ -0,0 +1,65 @@
++## @file
++#  Component description file for Xen ParaVirtualization driver module.
++#
++#  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++#
++#  This program and the accompanying materials
++#  are licensed and made available under the terms and conditions of the BSD License
++#  which accompanies this distribution. The full text of the license may be found at
++#  http://opensource.org/licenses/bsd-license.php
++#  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++#  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++#
++#
++##
++
++[Defines]
++  INF_VERSION                    = 0x00010005
++  BASE_NAME                      = ParaVirtualizationDxe
++  FILE_GUID                      = 0a5baf88-b6ec-4338-b1a7-f1496f605359
++  MODULE_TYPE                    = DXE_DRIVER
++  VERSION_STRING                 = 1.0
++
++  ENTRY_POINT                    = XenPvDriverEntryPoint
++
++#
++# The following information is for reference only and not required by the build tools.
++#
++#  VALID_ARCHITECTURES           = IA32 X64 IPF EBC
++#
++
++[Sources]
++  GasketHypercall.h
++  ParaVirtualizationDxe.h
++  ParaVirtualizationDxe.c
++  Hypercall.c
++
++[Sources.X64]
++  X64/GasketHypercall.S   # convert between Emu x86_64 ABI and EFI X64 ABI
++
++[Sources.IA32]
++  Ia32/GasketHypercall.S  #
++
++
++[Packages]
++  MdePkg/MdePkg.dec
++  OvmfPkg/OvmfPkg.dec
++
++[LibraryClasses]
++  UefiDriverEntryPoint
++  UefiBootServicesTableLib
++  DebugLib
++  HobLib
++
++  BaseLib
++
++[Protocols]
++  gEfiXenHvProtocolGuid                ## PRODUCED
++
++[Guids]
++  gEfiXenInfoGuid                      # PROTOCOL ALWAYS_CONSUMED
++
++[FixedPcd]
++
++[Depex]
++  TRUE
+Index: OvmfPkg/ParaVirtualizationDxe/Hypercall.c
+===================================================================
+--- OvmfPkg/ParaVirtualizationDxe/Hypercall.c	(revision 0)
++++ OvmfPkg/ParaVirtualizationDxe/Hypercall.c	(revision 0)
+@@ -0,0 +1,112 @@
++/**@file
++  This file holds all the needed Xen Hypercalls.
++
++  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++  This program and the accompanying materials
++  are licensed and made available under the terms and conditions of the BSD License
++  which accompanies this distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#include "ParaVirtualizationDxe.h"
++
++/**
++  This method passes the hypercall parameters and hypercall number to UNIX ABI function, as well as the address of hypercall page.
++
++  @param  HypercallNum    The Number of the hypercall.
++  @param  Arg1-Arg5       Parameters for the hypercall.
++
++**/
++EFI_STATUS
++EFIAPI
++Hypercall2Abi (
++  IN  UINTN  HypercallNum,
++  IN  UINTN  Arg1,
++  IN  UINTN  Arg2,
++  IN  UINTN  Arg3,
++  IN  UINTN  Arg4,
++  IN  UINTN  Arg5
++  )
++{
++  VOID *HypercallPages;
++
++  HypercallPages = GetHypercallPage ();
++  if (HypercallPages == NULL) {
++    return 0;
++  }
++
++  //
++  // All the hypercall just call one function.
++  //
++  return Hypercall (HypercallPages, HypercallNum * 32, Arg1, Arg2, Arg3, Arg4, Arg5);
++}
++
++/**
++  Xen Hypercall. All the hypercalls call one function.
++
++  @param  Cmd       parameter.
++  @param  Arg       Parameter.
++
++**/
++EFI_STATUS
++EFIAPI
++HypervisorXenVersion (
++  IN UINTN Cmd,
++  IN VOID  *Arg
++  )
++{
++  return Hypercall2Abi (HYPERVISOR_XEN_VERSION, (UINTN) Cmd, (UINTN) Arg, 0, 0, 0);
++}
++
++EFI_STATUS
++EFIAPI
++HypervisorGrantTableOp(
++  IN UINTN      Cmd,
++  IN VOID       *Uop,
++  IN UINTN      Count
++)
++{
++  return Hypercall2Abi (HYPERVISOR_GRANT_TABLE_OP, (UINTN) Cmd, (UINTN) Uop, Count, 0, 0);
++}
++
++EFI_STATUS
++EFIAPI
++HypervisorSchedOp (
++  IN UINTN      Cmd,
++  IN VOID       *Arg
++  )
++{
++  return Hypercall2Abi(HYPERVISOR_SCHED_OP, (UINTN) Cmd, (UINTN) Arg, 0, 0, 0);
++}
++
++EFI_STATUS
++EFIAPI
++HypervisorEventChannelOp (
++  IN UINTN Cmd,
++  IN VOID  *Arg
++  )
++{
++  return Hypercall2Abi(HYPERVISOR_EVENT_CHANNEL_OP, (UINTN) Cmd, (UINTN) Arg, 0, 0, 0);
++}
++
++EFI_STATUS
++EFIAPI
++HypervisorHvmOp (
++  IN UINTN Cmd,
++  IN VOID  *Arg
++  )
++{
++  return Hypercall2Abi (HYPERVISOR_HVM_OP, (UINTN) Cmd, (UINTN) Arg, 0, 0, 0);
++}
++
++
++/*
++  Add more hypercall here
++
++**/
++
+Index: OvmfPkg/ParaVirtualizationDxe/GasketHypercall.h
+===================================================================
+--- OvmfPkg/ParaVirtualizationDxe/GasketHypercall.h	(revision 0)
++++ OvmfPkg/ParaVirtualizationDxe/GasketHypercall.h	(revision 0)
+@@ -0,0 +1,44 @@
++/** @file
++
++  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++  This program and the accompanying materials
++  are licensed and made available under the terms and conditions of the BSD License
++  which accompanies this distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#ifndef _GASKET_HYPERCALL_H_
++#define _GASKET_HYPERCALL_H_
++
++UINTN
++EFIAPI
++Hypercall (
++  IN  VOID   *HypercallPageAddress,  // Address of hypercall page
++  IN  UINTN  HypercallOffset,        // Hypercall Offset ( = hypercall num * 32)
++  IN  UINTN  Arg1,                   // parameters
++  IN  UINTN  Arg2,                   //
++  IN  UINTN  Arg3,                   //
++  IN  UINTN  Arg4,                   //
++  IN  UINTN  Arg5                    //
++  );
++
++
++//
++// Hypercall2 is not used!
++//
++UINTN
++EFIAPI
++Hypercall2 (
++  IN  VOID   *HypercallPageAddress,  // Address of hypercall page
++  IN  UINTN  HypercallOffset,        // Hypercall Offset ( = hypercall num * 32)
++  IN  UINTN  Arg1,                   // parameters
++  IN  UINTN  Arg2                    //
++  );
++
++#endif
++
+Index: OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.c
+===================================================================
+--- OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.c	(revision 0)
++++ OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.c	(revision 0)
+@@ -0,0 +1,224 @@
++/** @file
++
++Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++This program and the accompanying materials
++are licensed and made available under the terms and conditions of the BSD License
++which accompanies this distribution.  The full text of the license may be found at
++http://opensource.org/licenses/bsd-license.php
++
++THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#include "ParaVirtualizationDxe.h"
++
++//
++// Module Global:
++//
++EFI_HANDLE   mXenHypercallHandle = NULL;
++EFI_XEN_HV_PROTOCOL  mXenHypercallProtocol;
++
++
++/**
++
++  Get Xen Hypercall page from HOB.
++
++**/
++VOID*
++GetHypercallPage (
++  VOID
++  )
++{
++  EFI_PEI_HOB_POINTERS  GuidHob;
++  EFI_XEN_INFO          *mXenInfo;
++ 
++  GuidHob.Raw = GetFirstGuidHob (&gEfiXenInfoGuid);
++  if (GuidHob.Raw != NULL) {
++    mXenInfo = GET_GUID_HOB_DATA (GuidHob.Guid);
++    if (mXenInfo != NULL) {
++      return (VOID *) (UINTN) mXenInfo->HyperPages;
++    }
++  } 
++
++  DEBUG ((EFI_D_ERROR, "Gasket_Fail to get Xen info from hob\n"));
++  return NULL;
++}
++
++
++/**
++  Print String (For Hypercall test)
++**/
++INTN
++EFIAPI
++PrintAsciiStr (
++  IN      CONST CHAR8               *FirstString,
++  IN      UINTN                     Length
++  )
++{
++  ASSERT (AsciiStrSize (FirstString));
++
++  while ((*FirstString != '\0') && (Length > 0)) {
++    DEBUG ((EFI_D_INFO, "%c", *FirstString));
++    FirstString++;
++    Length--;
++  }
++
++  DEBUG ((EFI_D_INFO, "\n"));
++  return EFI_SUCCESS;
++}
++
++/**
++
++  Test of calling hypercall in OVMF
++
++**/
++VOID
++TestHypercall (
++  VOID
++  )
++{
++  UINT32           Major, Minor;
++  XenExtraversion  ExtraVersion;
++
++  //hypercall simple test
++  Major = 0; Minor = 0;
++  Minor = mXenHypercallProtocol.HypervisorXenVersion(XENVER_VERSION, 0);
++  Major = Minor >> 16;
++  Minor &= 0xFFFF;
++  DEBUG ((EFI_D_INFO, "[TestInfo_CallHypercallInsideXenPvDXE]OVMF is running on Xen version: %d.%d\n", Major, Minor));
++
++  //test2
++  mXenHypercallProtocol.HypervisorXenVersion(XENVER_EXTRAVERSION, ExtraVersion);
++  DEBUG ((EFI_D_INFO, "[TestInfo_CallHypercallInsideXenPvDXE]Detected Xen "));
++  PrintAsciiStr(ExtraVersion, 16);
++}
++
++/**
++
++  Initialize the methods of EFI_XEN_HV_PROTOCOL;
++
++  @param  XenProtocolInstance   Points to the EFI_XEN_HV_PROTOCOL instance.  
++
++**/
++EFI_STATUS
++EFIAPI
++ProtocolInitialize (
++  IN OUT EFI_XEN_HV_PROTOCOL     *XenProtocolInstance
++  )
++{
++  //
++  // Check for invalid input parameters
++  //
++  ASSERT (XenProtocolInstance);
++
++  //
++  // Initialize the protocol methods
++  //
++  XenProtocolInstance->HypervisorSetTrapTable     = NULL;
++  XenProtocolInstance->HypervisorMmuUpdate        = NULL;
++  XenProtocolInstance->HypervisorSetGdt           = NULL;
++  XenProtocolInstance->HypervisorStackSwitch      = NULL;
++  XenProtocolInstance->HypervisorSetCallbacks     = NULL;
++  XenProtocolInstance->HypervisorFpuTaskswitch    = NULL;
++  XenProtocolInstance->HypervisorSchedOpCompat    = NULL;
++  XenProtocolInstance->HypervisorPlatformOp       = NULL;
++  XenProtocolInstance->HypervisorSetDebugreg      = NULL;
++  XenProtocolInstance->HypervisorGetDebugreg      = NULL;
++  XenProtocolInstance->HypervisorUpdateDescriptor = NULL;
++  XenProtocolInstance->HypervisorMemoryOp         = NULL;
++  XenProtocolInstance->HypervisorMulticall        = NULL;
++  XenProtocolInstance->HypervisorUpdateVaMapping  = NULL;
++  XenProtocolInstance->HypervisorSetTimerOp       = NULL;
++  XenProtocolInstance->HypervisorEventChannelOpCompat = NULL;
++  XenProtocolInstance->HypervisorXenVersion       = HypervisorXenVersion;
++  XenProtocolInstance->HypervisorConsoleIo        = NULL;
++  XenProtocolInstance->HypervisorPhysdevOpCompat  = NULL;
++  XenProtocolInstance->HypervisorGrantTableOp     = HypervisorGrantTableOp;
++  XenProtocolInstance->HypervisorVmAssist         = NULL;
++  XenProtocolInstance->HypervisorUpdateVaMappingOtherdomain = NULL;
++  XenProtocolInstance->HypervisorIret             = NULL;
++  XenProtocolInstance->HypervisorVcpuOp           = NULL;
++  XenProtocolInstance->HypervisorSetSegmentBase   = NULL;
++  XenProtocolInstance->HypervisorMmuextOp         = NULL;
++  XenProtocolInstance->HypervisorXsmOp            = NULL;
++  XenProtocolInstance->HypervisorNmiOp            = NULL;
++  XenProtocolInstance->HypervisorSchedOp          = HypervisorSchedOp;
++  XenProtocolInstance->HypervisorCallbackOp       = NULL;
++  XenProtocolInstance->HypervisorXenoprofOp       = NULL;
++  XenProtocolInstance->HypervisorEventChannelOp   = HypervisorEventChannelOp;
++  XenProtocolInstance->HypervisorPhysdevOp        = NULL;
++  XenProtocolInstance->HypervisorHvmOp            = HypervisorHvmOp;
++  XenProtocolInstance->HypervisorSysctl           = NULL;
++  XenProtocolInstance->HypervisorDomctl           = NULL;
++  XenProtocolInstance->HypervisorKexecOp          = NULL;
++  XenProtocolInstance->HypervisorTmemOp           = NULL;
++
++  XenProtocolInstance->HypervisorArch0            = NULL;
++  XenProtocolInstance->HypervisorArch1            = NULL;
++  XenProtocolInstance->HypervisorArch2            = NULL;
++  XenProtocolInstance->HypervisorArch3            = NULL;
++  XenProtocolInstance->HypervisorArch4            = NULL;
++  XenProtocolInstance->HypervisorArch5            = NULL;
++  XenProtocolInstance->HypervisorArch6            = NULL;
++  XenProtocolInstance->HypervisorArch7            = NULL;
++  
++  //
++  // Initialize other info in protocol
++  // TODO: Set the version info 
++  //
++  XenProtocolInstance->MajorVersion  = 0;
++  XenProtocolInstance->MinorVersion  = 0;
++
++  return EFI_SUCCESS;
++}
++
++/**
++
++  Driver to produce EFI_XEN_HV_PROTOCOL protocol. 
++
++  @param ImageHandle     Module's image handle
++  @param SystemTable     Pointer of EFI_SYSTEM_TABLE
++
++  @retval EFI_SUCCESS    Smbios protocol installed
++  @retval Other          No protocol installed, unload driver.
++
++**/
++EFI_STATUS
++EFIAPI
++XenPvDriverEntryPoint (
++  IN EFI_HANDLE           ImageHandle,
++  IN EFI_SYSTEM_TABLE     *SystemTable
++  )
++{
++  EFI_STATUS            Status;
++
++  //
++  // Make sure the Xen ParaVirtualization Protocol has not been installed in the system yet.
++  //
++  ASSERT_PROTOCOL_ALREADY_INSTALLED (NULL, &gEfiXenHvProtocolGuid);
++
++  //
++  // Initialize protocol
++  //
++  ProtocolInitialize(&mXenHypercallProtocol);
++
++  //
++  // Test inside Xen PV driver Dxe
++  //
++  TestHypercall();
++
++  //
++  // Make a new handle and install the protocol
++  //
++  Status = gBS->InstallMultipleProtocolInterfaces (
++                  &mXenHypercallHandle,
++                  &gEfiXenHvProtocolGuid, &mXenHypercallProtocol,
++                  NULL
++                  );
++  ASSERT_EFI_ERROR (Status);
++
++  return Status;
++}
++
+Index: OvmfPkg/ParaVirtualizationDxe/Ia32/GasketHypercall.S
+===================================================================
+--- OvmfPkg/ParaVirtualizationDxe/Ia32/GasketHypercall.S	(revision 0)
++++ OvmfPkg/ParaVirtualizationDxe/Ia32/GasketHypercall.S	(revision 0)
+@@ -0,0 +1,96 @@
++#------------------------------------------------------------------------------
++#
++# Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++#
++# This program and the accompanying materials
++# are licensed and made available under the terms and conditions of the BSD License
++# which accompanies this distribution.  The full text of the license may be found at
++# http://opensource.org/licenses/bsd-license.php.
++#
++# THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++# WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++#
++# Module Name:
++#
++#   GasketHypercall.S
++#
++# Abstract:
++#
++#   Hypercall function
++#
++# Notes:
++#
++#------------------------------------------------------------------------------
++
++#------------------------------------------------------------------------------
++#  UINTN
++#  EFIAPI
++#  Hypercall (
++#    IN  VOID   *HypercallPageAddress,  // passed in stack 8(%ebp)
++#    IN  UINTN  HypercallOffset,        // passed in stack 12(%ebp)
++#    IN  UINTN  Arg1,                   // passed in stack 16(%ebp)
++#    IN  UINTN  Arg2,                   // passed in stack 20(%ebp)
++#    IN  UINTN  Arg3,                   // passed in stack 24(%ebp)
++#    IN  UINTN  Arg4,                   // passed in stack 28(%ebp)
++#    IN  UINTN  Arg5,                   // passed in stack 32(%ebp)
++#    )
++#------------------------------------------------------------------------------
++
++  .text
++
++ASM_GLOBAL ASM_PFX(Hypercall)
++ASM_PFX(Hypercall):
++  pushl %ebp
++  movl  %esp, %ebp
++
++  pushl %ebx
++  pushl %ecx
++  pushl %edx
++  pushl %esi
++  pushl %edi  
++
++  movl 8(%ebp), %eax     // Address of hypercall page
++  addl 12(%ebp), %eax    // Address of hypercall is in %rax
++
++  movl 32(%ebp), %edi    // Swizzle args
++  movl 28(%ebp), %esi
++  movl 24(%ebp), %edx
++  movl 20(%ebp), %ecx
++  movl 16(%ebp), %ebx
++
++  call  *%eax
++
++  popl %edi
++  popl %esi
++  popl %edx
++  popl %ecx
++  popl %ebx
++
++  movl %ebp, %esp
++  popl %ebp
++  ret
++
++
++//
++// Hypercall2 is not used.
++//
++ASM_GLOBAL ASM_PFX(Hypercall2)
++ASM_PFX(Hypercall2):
++  pushl	%ebp
++  movl	%esp, %ebp
++
++  pushl %ecx
++
++  movl 8(%ebp), %eax     // Address of hypercall page
++  addl 12(%ebp), %eax    // Address of hypercall is in %rax
++
++  movl 20(%ebp), %ecx    // Swizzle args
++  movl 16(%ebp), %ebx
++ 
++  call *%eax
++
++  popl %ecx
++  movl %ebp, %esp
++  popl %ebp
++  ret
++
+Index: OvmfPkg/OvmfPkgIa32.dsc
+===================================================================
+--- OvmfPkg/OvmfPkgIa32.dsc	(revision 12068)
++++ OvmfPkg/OvmfPkgIa32.dsc	(working copy)
+@@ -300,9 +300,15 @@
+   }
+ 
+   MdeModulePkg/Core/RuntimeDxe/RuntimeDxe.inf
++  #
++  # Xen PV Dxe and Test
++  #
++  OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.inf
++  OvmfPkg/HypercallTestDxe/HypercallTestDxe.inf
+   MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
+   MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
+   MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
++  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
+   PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
+   UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
+   UefiCpuPkg/CpuDxe/CpuDxe.inf
+@@ -370,7 +376,7 @@
+   # ACPI Support
+   #
+   MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
+-  MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
++  OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf
+   OvmfPkg/AcpiTables/AcpiTables.inf
+ 
+   #
+Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.c
+===================================================================
+--- OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.c	(revision 0)
++++ OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.c	(revision 0)
+@@ -0,0 +1,508 @@
++/** @file
++  Publish Xen hvmloader SMBIOS inside OVMF. This code parses Xen SMBIOS tables and add them into UEFI SMBIOS by calling SMBIOS protocol.
++
++  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++  This program and the accompanying materials                          
++  are licensed and made available under the terms and conditions of the BSD License         
++  which accompanies this distribution.  The full text of the license may be found at        
++  http://opensource.org/licenses/bsd-license.php                                            
++                                                                                          
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,                     
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.             
++
++**/
++
++#include "SmbiosPlatformDxe.h"
++
++//
++// SMBIOS entry point structure
++//
++SMBIOS_TABLE_ENTRY_POINT    *EntryPointStructure    = NULL;
++EFI_SMBIOS_PROTOCOL         *gSmbios;
++
++/**
++  Type 0 -- BIOS Information
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++VOID
++InstallSmbiosType0 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  )
++{
++  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
++
++  //
++  // BIOS info (TYPE 0)
++  //
++  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 0, 0);
++  if (SmbiosTable.Raw == NULL) {
++    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 0 (BIOS Info) not found!\n"));
++    return ;
++  }
++
++  //
++  // Log Smbios Record Type0
++  //
++  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type0);
++
++  return;
++}
++
++/**
++  Type 1 -- System Information
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++VOID
++InstallSmbiosType1 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  )
++{
++  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
++
++  //
++  // System info (TYPE 1)
++  // 
++  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 1, 0);
++  if (SmbiosTable.Raw == NULL) {
++    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 1 (System Info) not found!\n"));
++    return ;
++  }
++
++  //
++  // Log Smbios Record Type1
++  //
++  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type1);
++
++  return;
++}
++
++/**
++  Type 3 -- System Enclosure or Chassis
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++VOID
++InstallSmbiosType3 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  )
++{
++  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
++
++  //
++  // Enclosure or Chassis info (TYPE 3)
++  // 
++  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 3, 0);
++  if (SmbiosTable.Raw == NULL) {
++    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 3 (Enclosure or Chassis Info) not found!\n"));
++    return ;
++  }
++
++  //
++  // Log Smbios Record Type3
++  //
++  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type3);
++
++  return;
++}
++
++/**
++  Type 4 -- Processor Information
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++VOID
++InstallSmbiosType4 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  )
++{
++  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
++
++  //
++  // Processor info (TYPE 4)
++  // 
++  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 4, 0);
++  if (SmbiosTable.Raw == NULL) {
++    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 4 (Processor Info) not found!\n"));
++    return ;
++  }
++
++  //
++  // Log Smbios Record Type4
++  //
++  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type4);
++
++  return ;
++}
++
++/**
++  Type 11 -- OEM Strings
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++VOID
++InstallSmbiosType11 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  )
++{
++  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
++
++  //
++  // OEM info (TYPE 11)
++  // 
++  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 11, 0);
++  if (SmbiosTable.Raw == NULL) {
++    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 11 (OEM Info) not found!\n"));
++    return ;
++  }
++
++  //
++  // Log Smbios Record Type11
++  //
++  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type11);
++
++  return ;
++}
++
++/**
++  Type 16 -- Physical Memory Array
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++VOID
++InstallSmbiosType16 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  )
++{
++  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
++
++  //
++  // Physical Memory Array info (TYPE 16)
++  // 
++  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 16, 0);
++  if (SmbiosTable.Raw == NULL) {
++    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 16 (Physical Memory Array info) not found!\n"));
++    return ;
++  }
++
++  //
++  // Log Smbios Record Type16
++  //
++  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type16);
++
++  return ;
++}
++
++/**
++  Type 17 -- Memory Device
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++VOID
++InstallSmbiosType17 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  )
++{
++  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
++
++  //
++  // Memory Device info (TYPE 17)
++  // 
++  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 17, 0);
++  if (SmbiosTable.Raw == NULL) {
++    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 17 (Memory Device Info) not found!\n"));
++    return ;
++  }
++
++  //
++  // Log Smbios Record Type17
++  //
++  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type17);
++
++  return ;
++}
++
++/**
++  Type 19 -- Memory Array Mapped Address
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++VOID
++InstallSmbiosType19 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  )
++{
++  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
++
++  //
++  // Memory Array Mapped Address info (TYPE 19)
++  // 
++  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 19, 0);
++  if (SmbiosTable.Raw == NULL) {
++    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 19 (Memory Array Mapped Address Info) not found!\n"));
++    return ;
++  }
++
++  //
++  // Log Smbios Record Type19
++  //
++  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type19);
++
++  return ;
++}
++
++/**
++  Type 20 -- Memory Device Mapped Address
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++VOID
++InstallSmbiosType20 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  )
++{
++  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
++
++  //
++  // Memory Device Mapped Address info (TYPE 20)
++  // 
++  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 20, 0);
++  if (SmbiosTable.Raw == NULL) {
++    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 20 (Memory Device Mapped Address Info) not found!\n"));
++    return ;
++  }
++
++  //
++  // Log Smbios Record Type20
++  //
++  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type20);
++
++  return ;
++}
++
++/**
++  Type 32 -- System Boot Information
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++VOID
++InstallSmbiosType32 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  )
++{
++  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
++
++  //
++  // System Boot info (TYPE 32)
++  // 
++  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 32, 0);
++  if (SmbiosTable.Raw == NULL) {
++    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 32 (System Boot Info) not found!\n"));
++    return ;
++  }
++
++  //
++  // Log Smbios Record Type32
++  //
++  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type32);
++
++  return ;
++}
++
++/**
++  Get SMBIOS record length.
++
++  @param  SmbiosTable   SMBIOS pointer.
++
++**/
++UINTN
++SmbiosTableLength (
++  IN SMBIOS_STRUCTURE_POINTER SmbiosTable
++  )
++{
++  CHAR8  *AChar;
++  UINTN  Length;
++
++  AChar = (CHAR8 *)(SmbiosTable.Raw + SmbiosTable.Hdr->Length);
++
++  //
++  // Each structure shall be terminated by a double-null (SMBIOS spec.7.1)
++  //
++  while ((*AChar != 0) || (*(AChar + 1) != 0)) {
++    AChar ++;
++  }
++  Length = ((UINTN)AChar - (UINTN)SmbiosTable.Raw + 2);
++  
++  return Length;
++}
++
++/**
++  Get SMBIOS record by type.
++
++  @param  Smbios       SMBIOS entry point structure pointer.
++  @param  Type         Type of SMBIOS record.
++  @param  Index        Index.
++
++**/
++SMBIOS_STRUCTURE_POINTER
++GetSmbiosTableFromType (
++  IN SMBIOS_TABLE_ENTRY_POINT  *Smbios,
++  IN UINT8                     Type,
++  IN UINTN                     Index
++  )
++{
++  SMBIOS_STRUCTURE_POINTER SmbiosTable;
++  UINTN                    SmbiosTypeIndex;
++  
++  SmbiosTypeIndex = 0;
++  SmbiosTable.Raw = (UINT8 *)(UINTN)Smbios->TableAddress;
++  if (SmbiosTable.Raw == NULL) {
++    return SmbiosTable;
++  }
++  while ((SmbiosTypeIndex != Index) || (SmbiosTable.Hdr->Type != Type)) {
++    if (SmbiosTable.Hdr->Type == 127) {
++      SmbiosTable.Raw = NULL;
++      return SmbiosTable;
++    }
++    if (SmbiosTable.Hdr->Type == Type) {
++      SmbiosTypeIndex ++;
++    }
++
++    //
++    // Get the structure address
++    //
++    SmbiosTable.Raw = (UINT8 *)(SmbiosTable.Raw + SmbiosTableLength (SmbiosTable));
++  }
++
++  return SmbiosTable;
++}
++
++/**
++  Get SMBIOS String.
++
++  @param  SmbiosTable   SMBIOS pointer.
++  @param  String        SMBIOS string.
++
++**/
++CHAR8 *
++GetSmbiosString (
++  IN SMBIOS_STRUCTURE_POINTER  SmbiosTable,
++  IN SMBIOS_TABLE_STRING       String
++  )
++{
++  CHAR8      *AString;
++  UINT8      Index;
++
++  Index = 1;
++  AString = (CHAR8 *)(SmbiosTable.Raw + SmbiosTable.Hdr->Length);
++  while (Index != String) {
++    while (*AString != 0) {
++      AString ++;
++    }
++    AString ++;
++    if (*AString == 0) {
++      return AString;
++    }
++    Index ++;
++  }
++
++  return AString;
++}
++
++/**
++  Log SMBIOS record.
++
++  @param  Smbios   Pointer to SMBIOS protocol instance.
++  @param  Buffer   Pointer to the data buffer.
++
++**/
++VOID
++LogSmbiosData (
++  IN   EFI_SMBIOS_PROTOCOL        *Smbios,
++  IN   UINT8                      *Buffer
++  )
++{
++  EFI_STATUS         Status;
++  EFI_SMBIOS_HANDLE  SmbiosHandle;
++  
++  SmbiosHandle = 0;
++  Status = Smbios->Add (
++                     Smbios,
++                     NULL,
++                     &SmbiosHandle,
++                     (EFI_SMBIOS_TABLE_HEADER*)Buffer
++                     );
++  ASSERT_EFI_ERROR (Status);
++}
++
++/**
++  Installs the Xen hvmloader Smbios Table to the System Table.
++
++  @param ImageHandle     Module's image handle
++  @param SystemTable     Pointer of EFI_SYSTEM_TABLE
++
++  @retval EFI_SUCCESS    Smbios protocol installed
++  @retval Other          No protocol installed, unload driver.
++
++**/
++EFI_STATUS
++EFIAPI
++SmbiosTablePublishEntry (
++  IN EFI_HANDLE           ImageHandle,
++  IN EFI_SYSTEM_TABLE     *SystemTable
++  )
++{
++  EFI_STATUS                Status;
++  EFI_HOB_GUID_TYPE         *GuidHob;
++
++  //
++  // See if a XenInfo HOB is available
++  //
++  GuidHob = GetFirstGuidHob (&gEfiXenInfoGuid);
++  if (GuidHob != NULL) {
++    //
++    // We are running inside Xen HVM. Then, find the Xen SMBIOS.
++    //
++    EntryPointStructure = XenSmbiosDetect();
++    if (EntryPointStructure == NULL) {
++      return EFI_NOT_FOUND;
++    }
++
++    //
++    // Find the SMBIOS protocol 
++    //
++    Status = gBS->LocateProtocol (
++                    &gEfiSmbiosProtocolGuid,
++                    NULL,
++                    (VOID**)&gSmbios
++                    );
++    if (EFI_ERROR (Status)) {
++      return Status;
++    }
++
++    InstallSmbiosType0 (EntryPointStructure);
++    InstallSmbiosType1 (EntryPointStructure);
++    InstallSmbiosType3 (EntryPointStructure);
++    InstallSmbiosType4 (EntryPointStructure);
++    InstallSmbiosType11 (EntryPointStructure);
++    InstallSmbiosType16 (EntryPointStructure);
++    InstallSmbiosType17 (EntryPointStructure);
++    InstallSmbiosType19 (EntryPointStructure);
++    InstallSmbiosType20 (EntryPointStructure);
++    InstallSmbiosType32 (EntryPointStructure);
++  }
++
++  return EFI_SUCCESS;
++}
+Index: OvmfPkg/SmbiosPlatformDxe/XenSmbiosSupport.c
+===================================================================
+--- OvmfPkg/SmbiosPlatformDxe/XenSmbiosSupport.c	(revision 0)
++++ OvmfPkg/SmbiosPlatformDxe/XenSmbiosSupport.c	(revision 0)
+@@ -0,0 +1,60 @@
++/** @file
++  Detect Xen hvmloader SMBIOS inside OVMF.
++
++  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++  This program and the accompanying materials                          
++  are licensed and made available under the terms and conditions of the BSD License         
++  which accompanies this distribution.  The full text of the license may be found at        
++  http://opensource.org/licenses/bsd-license.php                                            
++                                                                                          
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,                     
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.             
++
++**/
++
++#include "SmbiosPlatformDxe.h"
++
++/**
++  Figures out if Xen hvmloader provides SMBIOS for HVM.
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++SMBIOS_TABLE_ENTRY_POINT *
++XenSmbiosDetect (
++  VOID
++  )
++{
++  UINTN                     XenSmbiosPtr;
++  SMBIOS_TABLE_ENTRY_POINT  *XenSmbiosEntryPointStructure;
++  UINTN                     Index;
++  UINT8                     Length;
++  UINT8                     Checksum;
++  CHAR8                     *SmbiosBit;
++
++  for (XenSmbiosPtr = XEN_SMBIOS_PHYSICAL_ADDRESS; XenSmbiosPtr < XEN_SMBIOS_PHYSICAL_END; XenSmbiosPtr += 0x10) {
++
++    XenSmbiosEntryPointStructure = (SMBIOS_TABLE_ENTRY_POINT *) (UINTN) XenSmbiosPtr;
++
++    if (!AsciiStrnCmp ((CHAR8 *) XenSmbiosEntryPointStructure->AnchorString, "_SM_", 4) && !AsciiStrnCmp ((CHAR8 *) XenSmbiosEntryPointStructure->IntermediateAnchorString, "_DMI_", 5)) {
++      //
++      // Check the structure's checksum
++      //
++      SmbiosBit = (CHAR8 *) XenSmbiosPtr;
++      Length = XenSmbiosEntryPointStructure->EntryPointLength;
++      Checksum = 0;
++
++      for (Index = 0; Index < Length; Index++) {
++        Checksum += SmbiosBit[Index];
++      }
++      if (Checksum != 0) {
++        break;
++      }
++
++      return XenSmbiosEntryPointStructure;
++    }
++  }
++
++  return NULL;
++}
+Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.h
+===================================================================
+--- OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.h	(revision 0)
++++ OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.h	(revision 0)
+@@ -0,0 +1,159 @@
++/** @file
++  This code passthroughs Xen hvmloader SMBIOS inside OVMF.
++
++  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++  This program and the accompanying materials                          
++  are licensed and made available under the terms and conditions of the BSD License         
++  which accompanies this distribution.  The full text of the license may be found at        
++  http://opensource.org/licenses/bsd-license.php                                            
++                                                                                          
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,                     
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.             
++
++**/
++
++#ifndef _SMBIOS_PLATFORM_DXE_H_
++#define _SMBIOS_PLATFORM_DXE_H_
++
++#include <PiDxe.h>
++
++#include <Protocol/Smbios.h>
++#include <IndustryStandard/SmBios.h>
++#include <Guid/EventGroup.h>
++#include <Guid/SmBios.h>
++#include <Library/DebugLib.h>
++#include <Library/UefiDriverEntryPoint.h>
++#include <Library/UefiLib.h>
++#include <Library/BaseLib.h>
++#include <Library/BaseMemoryLib.h>
++#include <Library/MemoryAllocationLib.h>
++#include <Library/UefiBootServicesTableLib.h>
++#include <Library/PcdLib.h>
++#include <Library/HobLib.h>
++
++#define XEN_SMBIOS_PHYSICAL_ADDRESS       0x000EB000
++#define XEN_SMBIOS_PHYSICAL_END           0x000F0000
++
++extern EFI_GUID gEfiXenInfoGuid;
++
++/**
++  Figures out if Xen hvmloader provides SMBIOS for HVM.
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++SMBIOS_TABLE_ENTRY_POINT *
++XenSmbiosDetect (
++  VOID
++  );
++
++/**
++  Get SMBIOS record by type.
++
++  @param  Smbios       SMBIOS entry point structure pointer.
++  @param  Type         Type of SMBIOS record.
++  @param  Index        Index.
++
++**/
++SMBIOS_STRUCTURE_POINTER
++GetSmbiosTableFromType (
++  IN SMBIOS_TABLE_ENTRY_POINT  *Smbios,
++  IN UINT8                 Type,
++  IN UINTN                 Index
++  );
++
++/**
++  Get SMBIOS String.
++
++  @param  SmbiosTable   SMBIOS pointer.
++  @param  String        SMBIOS string.
++
++**/
++CHAR8 *
++GetSmbiosString (
++  IN SMBIOS_STRUCTURE_POINTER  SmbiosTable,
++  IN SMBIOS_TABLE_STRING       String
++  );
++
++/**
++  Logs SMBIOS record.
++
++  @param  Smbios   Pointer to SMBIOS protocol instance.
++  @param  Buffer   Pointer to the data buffer.
++
++**/
++VOID
++LogSmbiosData (
++  IN   EFI_SMBIOS_PROTOCOL        *Smbios,
++  IN   UINT8                      *Buffer
++  );
++
++/**
++  Get the SMBIOS recorde from Xen SMBIOS entry point and install it.
++
++  Type 0    BIOS Information
++  Type 1    System Information
++  Type 3    System Enclosure or Chassis
++  Type 4    Processor Information
++  Type 11   OEM Strings
++  Type 16   Physical Memory Array
++  Type 17   Memory Device
++  Type 19   Memory Array Mapped Address
++  Type 20   Memory Device Mapped Address
++  Type 32   System Boot Information
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
++
++**/
++VOID
++InstallSmbiosType0 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  );
++
++VOID
++InstallSmbiosType1 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  );
++
++VOID
++InstallSmbiosType3 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  );
++
++VOID
++InstallSmbiosType4 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  );
++
++VOID
++InstallSmbiosType11 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  );
++
++VOID
++InstallSmbiosType16 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  );
++
++VOID
++InstallSmbiosType17 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  );
++
++VOID
++InstallSmbiosType19 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  );
++
++VOID
++InstallSmbiosType20 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  );
++
++VOID
++InstallSmbiosType32 (
++  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
++  );
++
++#endif
+Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
+===================================================================
+--- OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf	(revision 0)
++++ OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf	(revision 0)
+@@ -0,0 +1,65 @@
++## @file
++#  Component description file for Xen hvmloader Smbios module. 
++#  This driver initializes and installs the Xen hvmloader SMBIOS protocol.
++#
++#  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++#
++#  This program and the accompanying materials
++#  are licensed and made available under the terms and conditions of the BSD License
++#  which accompanies this distribution. The full text of the license may be found at
++#  http://opensource.org/licenses/bsd-license.php
++#  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++#  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++#
++#
++##
++
++[Defines]
++  INF_VERSION                    = 0x00010005
++  BASE_NAME                      = SmbiosPlatformDxe
++  FILE_GUID                      = 4110465d-5ff3-4f4b-b580-24ed0d06747a
++  MODULE_TYPE                    = DXE_DRIVER
++  VERSION_STRING                 = 1.0
++
++  ENTRY_POINT                    = SmbiosTablePublishEntry
++
++#
++# The following information is for reference only and not required by the build tools.
++#
++#  VALID_ARCHITECTURES           = IA32 X64 IPF EBC
++#
++
++[Sources]
++  SmbiosPlatformDxe.h
++  SmbiosPlatformDxe.c
++  XenSmbiosSupport.c
++
++[Packages]
++  MdePkg/MdePkg.dec
++  MdeModulePkg/MdeModulePkg.dec
++  OvmfPkg/OvmfPkg.dec
++
++[LibraryClasses]
++  UefiBootServicesTableLib
++  MemoryAllocationLib
++  BaseMemoryLib
++  BaseLib
++  UefiLib
++  UefiDriverEntryPoint
++  DebugLib
++  PcdLib
++  HobLib
++
++[Protocols]
++  gEfiSmbiosProtocolGuid                      # PROTOCOL ALWAYS_PRODUCED
++
++[Guids]
++  gEfiEventReadyToBootGuid                    # PROTOCOL ALWAYS_CONSUMED
++  gEfiSmbiosTableGuid                         # PROTOCOL ALWAYS_CONSUMED
++  gEfiXenInfoGuid
++
++[FixedPcd]
++  gEfiMdeModulePkgTokenSpaceGuid.PcdSmbiosVersion
++
++[Depex]
++  TRUE
+Index: OvmfPkg/OvmfPkg.dec
+===================================================================
+--- OvmfPkg/OvmfPkg.dec	(revision 12068)
++++ OvmfPkg/OvmfPkg.dec	(working copy)
+@@ -37,6 +37,7 @@
+ 
+ [Protocols]
+   gBlockMmioProtocolGuid          = {0x6b558ce3, 0x69e5, 0x4c67, {0xa6, 0x34, 0xf7, 0xfe, 0x72, 0xad, 0xbe, 0x84}}
++  gEfiXenHvProtocolGuid           = {0x90d9933f, 0x0f3f, 0x4027, {0xaa, 0x7c, 0x05, 0x44, 0xb6, 0x62, 0x38, 0x5f}}
+ 
+ [PcdsFixedAtBuild]
+   gUefiOvmfPkgTokenSpaceGuid.PcdOvmfMemFvBase|0x0|UINT32|0
+Index: OvmfPkg/OvmfPkgX64.fdf
+===================================================================
+--- OvmfPkg/OvmfPkgX64.fdf	(revision 12068)
++++ OvmfPkg/OvmfPkgX64.fdf	(working copy)
+@@ -150,9 +150,15 @@
+ INF  MdeModulePkg/Universal/PCD/Dxe/Pcd.inf
+ 
+ INF  MdeModulePkg/Core/RuntimeDxe/RuntimeDxe.inf
++#
++# Xen PV Dxe and Test
++#
++INF  OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.inf
++INF  OvmfPkg/HypercallTestDxe/HypercallTestDxe.inf
+ INF  MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
+ INF  MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
+ INF  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
++INF  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
+ INF  PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
+ INF  UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
+ INF  UefiCpuPkg/CpuDxe/CpuDxe.inf
+@@ -199,7 +205,7 @@
+ INF  IntelFrameworkModulePkg/Bus/Isa/IsaFloppyDxe/IsaFloppyDxe.inf
+ 
+ INF  MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
+-INF  MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
++INF  OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf
+ INF  RuleOverride=ACPITABLE OvmfPkg/AcpiTables/AcpiTables.inf
+ 
+ INF  RuleOverride = BINARY FatBinPkg/EnhancedFatDxe/Fat.inf
