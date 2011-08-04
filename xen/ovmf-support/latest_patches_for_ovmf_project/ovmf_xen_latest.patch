@@ -1,6 +1,6 @@
-diff -r 42edf1481c57 tools/firmware/hvmloader/Makefile
---- a/tools/firmware/hvmloader/Makefile	Fri Jul 22 08:55:19 2011 +0100
-+++ b/tools/firmware/hvmloader/Makefile	Mon Aug 01 22:51:22 2011 +0800
+diff -r fa4e2ca9ecff tools/firmware/hvmloader/Makefile
+--- a/tools/firmware/hvmloader/Makefile	Tue Jul 26 18:37:32 2011 +0100
++++ b/tools/firmware/hvmloader/Makefile	Thu Aug 04 23:26:25 2011 +0800
 @@ -43,6 +43,19 @@
  CFLAGS += -DENABLE_ROMBIOS
  ROMBIOS_ROM := $(ROMBIOS_DIR)/BIOS-bochs-latest
@@ -61,9 +61,9 @@ diff -r 42edf1481c57 tools/firmware/hvmloader/Makefile
  ifneq ($(STDVGA_ROM),)
  	echo "#ifdef ROM_INCLUDE_VGABIOS" >> $@.new
  	sh ./mkhex vgabios_stdvga $(STDVGA_ROM) >> $@.new
-diff -r 42edf1481c57 tools/firmware/hvmloader/config.h
---- a/tools/firmware/hvmloader/config.h	Fri Jul 22 08:55:19 2011 +0100
-+++ b/tools/firmware/hvmloader/config.h	Mon Aug 01 22:51:22 2011 +0800
+diff -r fa4e2ca9ecff tools/firmware/hvmloader/config.h
+--- a/tools/firmware/hvmloader/config.h	Tue Jul 26 18:37:32 2011 +0100
++++ b/tools/firmware/hvmloader/config.h	Thu Aug 04 23:26:25 2011 +0800
 @@ -3,7 +3,7 @@
  
  #include <stdint.h>
@@ -73,17 +73,7 @@ diff -r 42edf1481c57 tools/firmware/hvmloader/config.h
  extern enum virtual_vga virtual_vga;
  
  struct bios_config {
-@@ -16,6 +16,9 @@
-     /* Physical address to load at */
-     unsigned int bios_address;
- 
-+    /* Custom load function. */
-+    void (*load)(const struct bios_config *config);
-+
-     /* ROMS */
-     int load_roms;
-     unsigned int optionrom_start, optionrom_end;
-@@ -27,6 +30,7 @@
+@@ -27,6 +27,7 @@
  
      void (*vm86_setup)(void);
      void (*e820_setup)(void);
@@ -91,7 +81,7 @@ diff -r 42edf1481c57 tools/firmware/hvmloader/config.h
  
      void (*acpi_build_tables)(void);
      void (*create_mp_tables)(void);
-@@ -36,6 +40,8 @@
+@@ -36,6 +37,8 @@
  
  extern struct bios_config rombios_config;
  extern struct bios_config seabios_config;
@@ -100,9 +90,9 @@ diff -r 42edf1481c57 tools/firmware/hvmloader/config.h
  
  #define PAGE_SHIFT 12
  #define PAGE_SIZE  (1ul << PAGE_SHIFT)
-diff -r 42edf1481c57 tools/firmware/hvmloader/hvmloader.c
---- a/tools/firmware/hvmloader/hvmloader.c	Fri Jul 22 08:55:19 2011 +0100
-+++ b/tools/firmware/hvmloader/hvmloader.c	Mon Aug 01 22:51:22 2011 +0800
+diff -r fa4e2ca9ecff tools/firmware/hvmloader/hvmloader.c
+--- a/tools/firmware/hvmloader/hvmloader.c	Tue Jul 26 18:37:32 2011 +0100
++++ b/tools/firmware/hvmloader/hvmloader.c	Thu Aug 04 23:26:25 2011 +0800
 @@ -360,6 +360,8 @@
  #ifdef ENABLE_SEABIOS
      { "seabios", &seabios_config, },
@@ -112,7 +102,7 @@ diff -r 42edf1481c57 tools/firmware/hvmloader/hvmloader.c
      { NULL, NULL }
  };
  
-@@ -402,7 +404,11 @@
+@@ -400,7 +402,11 @@
      printf("CPU speed is %u MHz\n", get_cpu_mhz());
  
      apic_setup();
@@ -125,22 +115,7 @@ diff -r 42edf1481c57 tools/firmware/hvmloader/hvmloader.c
  
      smp_initialise();
  
-@@ -417,8 +423,12 @@
-     }
- 
-     printf("Loading %s ...\n", bios->name);
--    memcpy((void *)bios->bios_address, bios->image,
--           bios->image_size);
-+    if (bios->load) {
-+        bios->load(bios);
-+    } else {
-+        memcpy((void *)bios->bios_address, bios->image,
-+               bios->image_size);
-+    }
- 
-     if (bios->bios_relocate)
-         bios->bios_relocate();
-@@ -451,6 +461,8 @@
+@@ -451,6 +457,8 @@
              vgabios_sz = round_option_rom(
                  (*(uint8_t *)(VGABIOS_PHYSICAL_ADDRESS+2)) * 512);
              break;
@@ -149,105 +124,408 @@ diff -r 42edf1481c57 tools/firmware/hvmloader/hvmloader.c
          default:
              printf("No emulated VGA adaptor ...\n");
              break;
-diff -r 42edf1481c57 tools/firmware/hvmloader/util.c
---- a/tools/firmware/hvmloader/util.c	Fri Jul 22 08:55:19 2011 +0100
-+++ b/tools/firmware/hvmloader/util.c	Mon Aug 01 22:51:22 2011 +0800
-@@ -303,12 +303,54 @@
-     *p = '\0';
- }
- 
+diff -r fa4e2ca9ecff tools/firmware/hvmloader/ovmf.c
+--- /dev/null	Thu Jan 01 00:00:00 1970 +0000
++++ b/tools/firmware/hvmloader/ovmf.c	Thu Aug 04 23:26:25 2011 +0800
+@@ -0,0 +1,394 @@
 +/*
-+ * Ensures mfn is backed by an accessible RAM page.
-+ * Returns 0 on success.
++ * HVM OVMF UEFI support.
++ *
++ * Bei Guan, gbtju85@gmail.com
++ * Andrei Warkentin, andreiw@motorola.com
++ * Leendert van Doorn, leendert@watson.ibm.com
++ * Copyright (c) 2005, International Business Machines Corporation.
++ * Copyright (c) 2006, Keir Fraser, XenSource Inc.
++ * Copyright (c) 2011, Citrix Inc.
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms and conditions of the GNU General Public License,
++ * version 2, as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License along with
++ * this program; if not, write to the Free Software Foundation, Inc., 59 Temple
++ * Place - Suite 330, Boston, MA 02111-1307 USA.
 + */
-+int mem_back_ram(xen_pfn_t mfn)
++
++#include "config.h"
++#include "smbios_types.h"
++#include "acpi/acpi2_0.h"
++#include "apic_regs.h"
++#include "../rombios/config.h"
++#include "util.h"
++#include "pci_regs.h"
++#include "hypercall.h"
++
++#include <xen/hvm/params.h>
++#include <xen/hvm/ioreq.h>
++#include <xen/memory.h>
++
++#define ROM_INCLUDE_OVMF32
++#define ROM_INCLUDE_OVMF64
++#define ROM_INCLUDE_OVMF32_CIRRUS_VGA
++#define ROM_INCLUDE_OVMF64_CIRRUS_VGA
++#include "roms.inc"
++
++#define OVMF_BEGIN              0xFFF00000ULL
++#define OVMF_SIZE               0x00100000ULL
++#define OVMF_MAXOFFSET          0x000FFFFFULL
++#define OVMF_END                (OVMF_BEGIN + OVMF_SIZE)
++#define LOWCHUNK_BEGIN          0x000F0000
++#define LOWCHUNK_SIZE           0x00010000
++#define LOWCHUNK_MAXOFFSET      0x0000FFFF
++#define LOWCHUNK_END            (OVMF_BEGIN + OVMF_SIZE)
++
++/*
++ * Set up an empty TSS area for virtual 8086 mode to use.
++ * The only important thing is that it musn't have any bits set
++ * in the interrupt redirection bitmap, so all zeros will do.
++ */
++static void ovmf_init_vm86_tss(void)
 +{
-+    struct xen_add_to_physmap xatp;
-+    struct xen_memory_reservation xmr;
-+    static int over_allocated = 0;
++    void *tss;
++    struct xen_hvm_param p;
 +
-+    if ( !over_allocated )
-+    {
-+        xmr.domid = DOMID_SELF;
-+        xmr.mem_flags = 0;
-+        xmr.extent_order = 0;
-+        xmr.nr_extents = 1;
-+        set_xen_guest_handle(xmr.extent_start, &mfn);
-+        if ( hypercall_memory_op(XENMEM_populate_physmap, &xmr) == 1 )
-+            return 0;
-+        over_allocated = 1;
-+    }
-+
-+    /*
-+     * Couldn't allocate more memory for domain,
-+     * move an existing physical page from end
-+     * of RAM.
-+     */
-+    if ( hvm_info->high_mem_pgend )
-+    {
-+        xatp.idx = --hvm_info->high_mem_pgend;
-+        if ( xatp.idx == (1ull << (32 - PAGE_SHIFT)) )
-+            hvm_info->high_mem_pgend = 0;
-+    }
-+    else
-+    {
-+        xatp.idx = --hvm_info->low_mem_pgend;
-+    }
-+    xatp.domid = DOMID_SELF;
-+    xatp.space = XENMAPSPACE_gmfn;
-+    xatp.gpfn  = mfn;
-+    if ( hypercall_memory_op(XENMEM_add_to_physmap, &xatp) != 0 )
-+        BUG();
-+    return 0;
++    tss = mem_alloc(128, 128);
++    memset(tss, 0, 128);
++    p.domid = DOMID_SELF;
++    p.index = HVM_PARAM_VM86_TSS;
++    p.value = virt_to_phys(tss);
++    hypercall_hvm_op(HVMOP_set_param, &p);
++    printf("vm86 TSS at %08lx\n", virt_to_phys(tss));
 +}
 +
- void *mem_alloc(uint32_t size, uint32_t align)
- {
-     static uint32_t reserve = RESERVED_MEMBASE - 1;
--    static int over_allocated;
--    struct xen_add_to_physmap xatp;
--    struct xen_memory_reservation xmr;
-     xen_pfn_t mfn;
-     uint32_t s, e;
- 
-@@ -326,35 +368,7 @@
-         reserve += PAGE_SIZE;
-         mfn = reserve >> PAGE_SHIFT;
- 
--        /* Try to allocate a brand new page in the reserved area. */
--        if ( !over_allocated )
--        {
--            xmr.domid = DOMID_SELF;
--            xmr.mem_flags = 0;
--            xmr.extent_order = 0;
--            xmr.nr_extents = 1;
--            set_xen_guest_handle(xmr.extent_start, &mfn);
--            if ( hypercall_memory_op(XENMEM_populate_physmap, &xmr) == 1 )
--                continue;
--            over_allocated = 1;
--        }
--
--        /* Otherwise, relocate a page from the ordinary RAM map. */
--        if ( hvm_info->high_mem_pgend )
--        {
--            xatp.idx = --hvm_info->high_mem_pgend;
--            if ( xatp.idx == (1ull << (32 - PAGE_SHIFT)) )
--                hvm_info->high_mem_pgend = 0;
--        }
--        else
--        {
--            xatp.idx = --hvm_info->low_mem_pgend;
--        }
--        xatp.domid = DOMID_SELF;
--        xatp.space = XENMAPSPACE_gmfn;
--        xatp.gpfn  = mfn;
--        if ( hypercall_memory_op(XENMEM_add_to_physmap, &xatp) != 0 )
--            BUG();
-+        BUG_ON(mem_back_ram(mfn));
-     }
- 
-     reserve = e;
-@@ -624,22 +638,24 @@
++static void ovmf_load(const struct bios_config *config)
++{
++    xen_pfn_t mfn;
++    uint64_t addr = OVMF_BEGIN;
++
++    virtual_vga = VGA_custom;
++
++    /* Copy video ROM. */
++    if (config == &ovmf32_config) {
++        memcpy((void *)VGABIOS_PHYSICAL_ADDRESS,
++               ovmf32_cirrus_vga, sizeof(ovmf32_cirrus_vga));
++        printf("OVMF32 Cirrus [0x%x-0x%x]\n", VGABIOS_PHYSICAL_ADDRESS,
++               VGABIOS_PHYSICAL_ADDRESS + sizeof(ovmf32_cirrus_vga));
++    } else if (config == &ovmf64_config) {
++        memcpy((void *)VGABIOS_PHYSICAL_ADDRESS,
++               ovmf64_cirrus_vga, sizeof(ovmf64_cirrus_vga));
++        printf("OVMF64 Cirrus [0x%x-0x%x]\n", VGABIOS_PHYSICAL_ADDRESS,
++               VGABIOS_PHYSICAL_ADDRESS + sizeof(ovmf64_cirrus_vga));
++    }
++
++    /* Copy low-reset vector portion. */
++    memcpy((void *) LOWCHUNK_BEGIN, (uint8_t *) config->image
++           + OVMF_SIZE
++           - LOWCHUNK_SIZE,
++           LOWCHUNK_SIZE);
++
++    /* Ensure we have backing page prior to moving FD. */
++    while ((addr >> PAGE_SHIFT) != (OVMF_END >> PAGE_SHIFT)) {
++        mfn = (uint32_t) (addr >> PAGE_SHIFT);
++        addr += PAGE_SIZE;
++
++        mem_hole_populate_ram(mfn, 1);
++    }
++
++    printf("Initialized FD backing pages...\n");
++
++    /* Copy FD. */
++    memcpy((void *) OVMF_BEGIN, config->image, OVMF_SIZE);
++    printf("Load complete!\n");
++}
++
++/*
++ * Ideally this function should just adjust the low memory size so MMIO fits,
++ * everything else should be done in UEFI code
++ */
++static void ovmf_pci_setup(void)
++{
++    uint32_t base, devfn, bar_reg, bar_data, bar_sz, cmd, mmio_total = 0;
++    uint16_t class, vendor_id, device_id;
++    unsigned int bar, pin, link, isa_irq;
++
++    /* Resources assignable to PCI devices via BARs. */
++    struct resource {
++        uint32_t base, max;
++    } *resource, mem_resource, io_resource;
++
++    /* Create a list of device BARs in descending order of size. */
++    struct bars {
++        uint32_t devfn, bar_reg, bar_sz;
++    } *bars = (struct bars *)SCRATCH_PHYSICAL_ADDRESS;
++    unsigned int i, nr_bars = 0;
++
++    /* Program PCI-ISA bridge with appropriate link routes. */
++    isa_irq = 0;
++    for ( link = 0; link < 4; link++ )
++    {
++        do { isa_irq = (isa_irq + 1) & 15;
++        } while ( !(PCI_ISA_IRQ_MASK & (1U << isa_irq)) );
++        pci_writeb(PCI_ISA_DEVFN, 0x60 + link, isa_irq);
++        printf("PCI-ISA link %u routed to IRQ%u\n", link, isa_irq);
++    }
++
++    /* Program ELCR to match PCI-wired IRQs. */
++    outb(0x4d0, (uint8_t)(PCI_ISA_IRQ_MASK >> 0));
++    outb(0x4d1, (uint8_t)(PCI_ISA_IRQ_MASK >> 8));
++
++    /* Scan the PCI bus and map resources. */
++    for ( devfn = 0; devfn < 256; devfn++ )
++    {
++        class     = pci_readw(devfn, PCI_CLASS_DEVICE);
++        vendor_id = pci_readw(devfn, PCI_VENDOR_ID);
++        device_id = pci_readw(devfn, PCI_DEVICE_ID);
++        if ( (vendor_id == 0xffff) && (device_id == 0xffff) )
++            continue;
++
++        ASSERT((devfn != PCI_ISA_DEVFN) ||
++               ((vendor_id == 0x8086) && (device_id == 0x7000)));
++
++        switch ( class )
++        {
++        case 0x0680:
++            /* PIIX4 ACPI PM. Special device with special PCI config space. */
++            ASSERT((vendor_id == 0x8086) && (device_id == 0x7113));
++            pci_writew(devfn, 0x20, 0x0000); /* No smb bus IO enable */
++            pci_writew(devfn, 0xd2, 0x0000); /* No smb bus IO enable */
++            pci_writew(devfn, 0x22, 0x0000);
++            pci_writew(devfn, 0x3c, 0x0009); /* Hardcoded IRQ9 */
++            pci_writew(devfn, 0x3d, 0x0001);
++            pci_writel(devfn, 0x40, ACPI_PM1A_EVT_BLK_ADDRESS_V1 | 1);
++            pci_writeb(devfn, 0x80, 0x01); /* enable PM io space */
++            break;
++        case 0x0101:
++            if ( vendor_id == 0x8086 )
++            {
++                /* Intel ICHs since PIIX3: enable IDE legacy mode. */
++                pci_writew(devfn, 0x40, 0x8000); /* enable IDE0 */
++                pci_writew(devfn, 0x42, 0x8000); /* enable IDE1 */
++            }
++            break;
++        }
++
++        /* Map the I/O memory and port resources. */
++        for ( bar = 0; bar < 7; bar++ )
++        {
++            bar_reg = PCI_BASE_ADDRESS_0 + 4*bar;
++            if ( bar == 6 )
++                bar_reg = PCI_ROM_ADDRESS;
++
++            bar_data = pci_readl(devfn, bar_reg);
++            pci_writel(devfn, bar_reg, ~0);
++            bar_sz = pci_readl(devfn, bar_reg);
++            pci_writel(devfn, bar_reg, bar_data);
++            if ( bar_sz == 0 )
++                continue;
++
++            bar_sz &= (((bar_data & PCI_BASE_ADDRESS_SPACE) ==
++                        PCI_BASE_ADDRESS_SPACE_MEMORY) ?
++                       PCI_BASE_ADDRESS_MEM_MASK :
++                       (PCI_BASE_ADDRESS_IO_MASK & 0xffff));
++            bar_sz &= ~(bar_sz - 1);
++
++            for ( i = 0; i < nr_bars; i++ )
++                if ( bars[i].bar_sz < bar_sz )
++                    break;
++
++            if ( i != nr_bars )
++                memmove(&bars[i+1], &bars[i], (nr_bars-i) * sizeof(*bars));
++
++            bars[i].devfn   = devfn;
++            bars[i].bar_reg = bar_reg;
++            bars[i].bar_sz  = bar_sz;
++
++            if ( (bar_data & PCI_BASE_ADDRESS_SPACE) ==
++                 PCI_BASE_ADDRESS_SPACE_MEMORY )
++                mmio_total += bar_sz;
++
++            nr_bars++;
++
++            /* Skip the upper-half of the address for a 64-bit BAR. */
++            if ( (bar_data & (PCI_BASE_ADDRESS_SPACE |
++                              PCI_BASE_ADDRESS_MEM_TYPE_MASK)) == 
++                 (PCI_BASE_ADDRESS_SPACE_MEMORY | 
++                  PCI_BASE_ADDRESS_MEM_TYPE_64) )
++                bar++;
++        }
++
++        /* Map the interrupt. */
++        pin = pci_readb(devfn, PCI_INTERRUPT_PIN);
++        if ( pin != 0 )
++        {
++            /* This is the barber's pole mapping used by Xen. */
++            link = ((pin - 1) + (devfn >> 3)) & 3;
++            isa_irq = pci_readb(PCI_ISA_DEVFN, 0x60 + link);
++            pci_writeb(devfn, PCI_INTERRUPT_LINE, isa_irq);
++            printf("pci dev %02x:%x INT%c->IRQ%u\n",
++                   devfn>>3, devfn&7, 'A'+pin-1, isa_irq);
++        }
++
++        /* Enable bus mastering. */
++        cmd = pci_readw(devfn, PCI_COMMAND);
++        cmd |= PCI_COMMAND_MASTER;
++        pci_writew(devfn, PCI_COMMAND, cmd);
++    }
++
++    while ( (mmio_total > (pci_mem_end - pci_mem_start)) &&
++            ((pci_mem_start << 1) != 0) )
++        pci_mem_start <<= 1;
++
++    while ( (pci_mem_start >> PAGE_SHIFT) < hvm_info->low_mem_pgend )
++    {
++        struct xen_add_to_physmap xatp;
++        if ( hvm_info->high_mem_pgend == 0 )
++            hvm_info->high_mem_pgend = 1ull << (32 - PAGE_SHIFT);
++        xatp.domid = DOMID_SELF;
++        xatp.space = XENMAPSPACE_gmfn;
++        xatp.idx   = --hvm_info->low_mem_pgend;
++        xatp.gpfn  = hvm_info->high_mem_pgend++;
++        if ( hypercall_memory_op(XENMEM_add_to_physmap, &xatp) != 0 )
++            BUG();
++    }
++
++    mem_resource.base = pci_mem_start;
++    mem_resource.max = pci_mem_end;
++    io_resource.base = 0xc000;
++    io_resource.max = 0x10000;
++
++    /* Assign iomem and ioport resources in descending order of size. */
++    for ( i = 0; i < nr_bars; i++ )
++    {
++        devfn   = bars[i].devfn;
++        bar_reg = bars[i].bar_reg;
++        bar_sz  = bars[i].bar_sz;
++
++        bar_data = pci_readl(devfn, bar_reg);
++
++        if ( (bar_data & PCI_BASE_ADDRESS_SPACE) ==
++             PCI_BASE_ADDRESS_SPACE_MEMORY )
++        {
++            resource = &mem_resource;
++            bar_data &= ~PCI_BASE_ADDRESS_MEM_MASK;
++        }
++        else
++        {
++            resource = &io_resource;
++            bar_data &= ~PCI_BASE_ADDRESS_IO_MASK;
++        }
++
++        base = (resource->base + bar_sz - 1) & ~(bar_sz - 1);
++        bar_data |= base;
++        base += bar_sz;
++
++        if ( (base < resource->base) || (base > resource->max) )
++        {
++            printf("pci dev %02x:%x bar %02x size %08x: no space for "
++                   "resource!\n", devfn>>3, devfn&7, bar_reg, bar_sz);
++            continue;
++        }
++
++        resource->base = base;
++
++        pci_writel(devfn, bar_reg, bar_data);
++        printf("pci dev %02x:%x bar %02x size %08x: %08x\n",
++               devfn>>3, devfn&7, bar_reg, bar_sz, bar_data);
++
++        /* Now enable the memory or I/O mapping. */
++        cmd = pci_readw(devfn, PCI_COMMAND);
++        if ( (bar_reg == PCI_ROM_ADDRESS) ||
++             ((bar_data & PCI_BASE_ADDRESS_SPACE) ==
++              PCI_BASE_ADDRESS_SPACE_MEMORY) )
++            cmd |= PCI_COMMAND_MEMORY;
++        else
++            cmd |= PCI_COMMAND_IO;
++        pci_writew(devfn, PCI_COMMAND, cmd);
++    }
++}
++
++static void ovmf_acpi_build_tables(void)
++{
++    acpi_build_tables(ACPI_PHYSICAL_ADDRESS);
++}
++
++static void ovmf_create_smbios_tables(void)
++{
++    hvm_write_smbios_tables(SMBIOS_PHYSICAL_ADDRESS,
++                            SMBIOS_PHYSICAL_ADDRESS + sizeof(struct smbios_entry_point),
++                            SMBIOS_PHYSICAL_END);
++}
++
++struct bios_config ovmf32_config =  {
++    .name = "OVMF-IA32",
++
++    .image = ovmf32,
++    .image_size = sizeof(ovmf32),
++
++    .bios_address = 0,
++
++    .load_roms = 0,
++
++    .optionrom_start = 0,
++    .optionrom_end = 0,
++
++    .bios_load = ovmf_load,
++
++    .bios_info_setup = NULL,
++    .bios_info_finish = NULL,
++
++    .vm86_setup = ovmf_init_vm86_tss,
++    .e820_setup = NULL,
++    .pci_setup = ovmf_pci_setup,
++
++    .acpi_build_tables = ovmf_acpi_build_tables,
++    .create_mp_tables = NULL,
++    .create_smbios_tables = ovmf_create_smbios_tables,
++    .create_pir_tables = NULL,
++};
++
++struct bios_config ovmf64_config =  {
++    .name = "OVMF-X64",
++
++    .image = ovmf64,
++    .image_size = sizeof(ovmf64),
++
++    .bios_address = 0,
++
++    .load_roms = 0,
++
++    .optionrom_start = 0,
++    .optionrom_end = 0,
++
++    .bios_load = ovmf_load,
++
++    .bios_info_setup = NULL,
++    .bios_info_finish = NULL,
++
++    .vm86_setup = ovmf_init_vm86_tss,
++    .e820_setup = NULL,
++    .pci_setup = ovmf_pci_setup,
++
++    .acpi_build_tables = ovmf_acpi_build_tables,
++    .create_mp_tables = NULL,
++    .create_smbios_tables = ovmf_create_smbios_tables,
++    .create_pir_tables = NULL,
++};
++
++/*
++ * Local variables:
++ * mode: C
++ * c-set-style: "BSD"
++ * c-basic-offset: 4
++ * tab-width: 4
++ * indent-tabs-mode: nil
++ * End:
++ */
+diff -r fa4e2ca9ecff tools/firmware/hvmloader/util.c
+--- a/tools/firmware/hvmloader/util.c	Tue Jul 26 18:37:32 2011 +0100
++++ b/tools/firmware/hvmloader/util.c	Thu Aug 04 23:26:25 2011 +0800
+@@ -638,14 +638,18 @@
      return table;
  }
  
@@ -268,39 +546,17 @@ diff -r 42edf1481c57 tools/firmware/hvmloader/util.c
      xatp.domid = DOMID_SELF;
      xatp.space = XENMAPSPACE_shared_info;
      xatp.idx   = 0;
--    xatp.gpfn  = 0xfffffu;
--    shared_info = (struct shared_info *)(xatp.gpfn << PAGE_SHIFT);
-+    xatp.gpfn  = ((uint32_t) shared_info) >> PAGE_SHIFT;
-     if ( hypercall_memory_op(XENMEM_add_to_physmap, &xatp) != 0 )
-         BUG();
--
-     return shared_info;
- }
- 
-diff -r 42edf1481c57 tools/firmware/hvmloader/util.h
---- a/tools/firmware/hvmloader/util.h	Fri Jul 22 08:55:19 2011 +0100
-+++ b/tools/firmware/hvmloader/util.h	Mon Aug 01 22:51:22 2011 +0800
-@@ -3,6 +3,7 @@
- 
- #include <stdarg.h>
- #include <stdint.h>
-+#include <xen/memory.h>
- #include <xen/hvm/hvm_info_table.h>
- 
- #define __STR(...) #__VA_ARGS__
-@@ -164,6 +165,9 @@
- int printf(const char *fmt, ...) __attribute__ ((format (printf, 1, 2)));
- int vprintf(const char *fmt, va_list ap);
- 
-+/* Create RAM backing for guest machine frame. */
-+int mem_back_ram(xen_pfn_t mfn);
-+
- /* Allocate memory in a reserved region below 4GB. */
- void *mem_alloc(uint32_t size, uint32_t align);
- #define virt_to_phys(v) ((unsigned long)(v))
-diff -r 42edf1481c57 tools/libxl/libxl.idl
---- a/tools/libxl/libxl.idl	Fri Jul 22 08:55:19 2011 +0100
-+++ b/tools/libxl/libxl.idl	Mon Aug 01 22:51:22 2011 +0800
+diff -r fa4e2ca9ecff tools/firmware/ovmf/ovmf-ia32-cirrus-vga.bin
+Binary file tools/firmware/ovmf/ovmf-ia32-cirrus-vga.bin has changed
+diff -r fa4e2ca9ecff tools/firmware/ovmf/ovmf-ia32.bin
+Binary file tools/firmware/ovmf/ovmf-ia32.bin has changed
+diff -r fa4e2ca9ecff tools/firmware/ovmf/ovmf-x64-cirrus-vga.bin
+Binary file tools/firmware/ovmf/ovmf-x64-cirrus-vga.bin has changed
+diff -r fa4e2ca9ecff tools/firmware/ovmf/ovmf-x64.bin
+Binary file tools/firmware/ovmf/ovmf-x64.bin has changed
+diff -r fa4e2ca9ecff tools/libxl/libxl.idl
+--- a/tools/libxl/libxl.idl	Tue Jul 26 18:37:32 2011 +0100
++++ b/tools/libxl/libxl.idl	Thu Aug 04 23:26:25 2011 +0800
 @@ -137,6 +137,7 @@
  
  libxl_domain_create_info = Struct("domain_create_info",[
@@ -309,9 +565,9 @@ diff -r 42edf1481c57 tools/libxl/libxl.idl
      ("hap",          bool),
      ("oos",          bool),
      ("ssidref",      uint32),
-diff -r 42edf1481c57 tools/libxl/libxl_create.c
---- a/tools/libxl/libxl_create.c	Fri Jul 22 08:55:19 2011 +0100
-+++ b/tools/libxl/libxl_create.c	Mon Aug 01 22:51:22 2011 +0800
+diff -r fa4e2ca9ecff tools/libxl/libxl_create.c
+--- a/tools/libxl/libxl_create.c	Tue Jul 26 18:37:32 2011 +0100
++++ b/tools/libxl/libxl_create.c	Thu Aug 04 23:26:25 2011 +0800
 @@ -407,6 +407,10 @@
      if (info->poolname)
          xs_write(ctx->xsh, t, libxl__sprintf(gc, "%s/pool_name", vm_path), info->poolname, strlen(info->poolname));
@@ -323,9 +579,9 @@ diff -r 42edf1481c57 tools/libxl/libxl_create.c
      libxl__xs_writev(gc, t, dom_path, info->xsdata);
      libxl__xs_writev(gc, t, libxl__sprintf(gc, "%s/platform", dom_path), info->platformdata);
  
-diff -r 42edf1481c57 tools/libxl/libxl_dm.c
---- a/tools/libxl/libxl_dm.c	Fri Jul 22 08:55:19 2011 +0100
-+++ b/tools/libxl/libxl_dm.c	Mon Aug 01 22:51:22 2011 +0800
+diff -r fa4e2ca9ecff tools/libxl/libxl_dm.c
+--- a/tools/libxl/libxl_dm.c	Tue Jul 26 18:37:32 2011 +0100
++++ b/tools/libxl/libxl_dm.c	Thu Aug 04 23:26:25 2011 +0800
 @@ -804,6 +804,7 @@
      char *vm_path;
      char **pass_stuff;
@@ -352,9 +608,9 @@ diff -r 42edf1481c57 tools/libxl/libxl_dm.c
  
      path = libxl__sprintf(gc, "/local/domain/0/device-model/%d", info->domid);
      xs_mkdir(ctx->xsh, XBT_NULL, path);
-diff -r 42edf1481c57 tools/libxl/xl_cmdimpl.c
---- a/tools/libxl/xl_cmdimpl.c	Fri Jul 22 08:55:19 2011 +0100
-+++ b/tools/libxl/xl_cmdimpl.c	Mon Aug 01 22:51:22 2011 +0800
+diff -r fa4e2ca9ecff tools/libxl/xl_cmdimpl.c
+--- a/tools/libxl/xl_cmdimpl.c	Tue Jul 26 18:37:32 2011 +0100
++++ b/tools/libxl/xl_cmdimpl.c	Thu Aug 04 23:26:25 2011 +0800
 @@ -567,6 +567,10 @@
          }
      }
