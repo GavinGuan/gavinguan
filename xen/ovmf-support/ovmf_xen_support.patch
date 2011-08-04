@@ -1,6 +1,6 @@
 diff -r fa4e2ca9ecff tools/firmware/hvmloader/Makefile
 --- a/tools/firmware/hvmloader/Makefile	Tue Jul 26 18:37:32 2011 +0100
-+++ b/tools/firmware/hvmloader/Makefile	Thu Aug 04 23:18:54 2011 +0800
++++ b/tools/firmware/hvmloader/Makefile	Thu Aug 04 23:22:46 2011 +0800
 @@ -43,6 +43,19 @@
  CFLAGS += -DENABLE_ROMBIOS
  ROMBIOS_ROM := $(ROMBIOS_DIR)/BIOS-bochs-latest
@@ -63,7 +63,7 @@ diff -r fa4e2ca9ecff tools/firmware/hvmloader/Makefile
  	sh ./mkhex vgabios_stdvga $(STDVGA_ROM) >> $@.new
 diff -r fa4e2ca9ecff tools/firmware/hvmloader/config.h
 --- a/tools/firmware/hvmloader/config.h	Tue Jul 26 18:37:32 2011 +0100
-+++ b/tools/firmware/hvmloader/config.h	Thu Aug 04 23:18:54 2011 +0800
++++ b/tools/firmware/hvmloader/config.h	Thu Aug 04 23:22:46 2011 +0800
 @@ -3,7 +3,7 @@
  
  #include <stdint.h>
@@ -92,7 +92,7 @@ diff -r fa4e2ca9ecff tools/firmware/hvmloader/config.h
  #define PAGE_SIZE  (1ul << PAGE_SHIFT)
 diff -r fa4e2ca9ecff tools/firmware/hvmloader/hvmloader.c
 --- a/tools/firmware/hvmloader/hvmloader.c	Tue Jul 26 18:37:32 2011 +0100
-+++ b/tools/firmware/hvmloader/hvmloader.c	Thu Aug 04 23:18:54 2011 +0800
++++ b/tools/firmware/hvmloader/hvmloader.c	Thu Aug 04 23:22:46 2011 +0800
 @@ -360,6 +360,8 @@
  #ifdef ENABLE_SEABIOS
      { "seabios", &seabios_config, },
@@ -126,7 +126,7 @@ diff -r fa4e2ca9ecff tools/firmware/hvmloader/hvmloader.c
              break;
 diff -r fa4e2ca9ecff tools/firmware/hvmloader/ovmf.c
 --- /dev/null	Thu Jan 01 00:00:00 1970 +0000
-+++ b/tools/firmware/hvmloader/ovmf.c	Thu Aug 04 23:18:54 2011 +0800
++++ b/tools/firmware/hvmloader/ovmf.c	Thu Aug 04 23:22:46 2011 +0800
 @@ -0,0 +1,394 @@
 +/*
 + * HVM OVMF UEFI support.
@@ -524,7 +524,7 @@ diff -r fa4e2ca9ecff tools/firmware/hvmloader/ovmf.c
 + */
 diff -r fa4e2ca9ecff tools/firmware/hvmloader/util.c
 --- a/tools/firmware/hvmloader/util.c	Tue Jul 26 18:37:32 2011 +0100
-+++ b/tools/firmware/hvmloader/util.c	Thu Aug 04 23:18:54 2011 +0800
++++ b/tools/firmware/hvmloader/util.c	Thu Aug 04 23:22:46 2011 +0800
 @@ -638,14 +638,18 @@
      return table;
  }
@@ -546,11 +546,3 @@ diff -r fa4e2ca9ecff tools/firmware/hvmloader/util.c
      xatp.domid = DOMID_SELF;
      xatp.space = XENMAPSPACE_shared_info;
      xatp.idx   = 0;
-@@ -653,7 +657,6 @@
-     shared_info = (struct shared_info *)(xatp.gpfn << PAGE_SHIFT);
-     if ( hypercall_memory_op(XENMEM_add_to_physmap, &xatp) != 0 )
-         BUG();
--
-     return shared_info;
- }
- 
