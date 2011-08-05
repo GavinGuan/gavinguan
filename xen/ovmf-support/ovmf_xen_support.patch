@@ -1,6 +1,24 @@
-diff -r fa4e2ca9ecff tools/firmware/hvmloader/Makefile
---- a/tools/firmware/hvmloader/Makefile	Tue Jul 26 18:37:32 2011 +0100
-+++ b/tools/firmware/hvmloader/Makefile	Thu Aug 04 23:44:56 2011 +0800
+# HG changeset patch
+# User gbtju85@gmail.com
+#
+
+Enable Xen-unstable hvmloader to load OVMF BIOS. 
+It supports OVMF BIOS in IA32 and X86 environment.
+
+Usage:
+Add an option field in HVM config file.
+# OVMF support. When enabled, hvmloader can load OVMF bios of IA32("ovmf-ia32") and X64("ovmf-x64")
+hvmbios = "ovmf-ia32"
+#hvmbios = "ovmf-x64"
+
+Note:
+Enable the HVM guest ACPI: acpi=1
+Use the OVMF to boot into a UEFI-aware OS, such as ubuntu-10.10-desktop-amd64.iso. Just set the "disk" option like this:
+disk = [ 'file:/root/<img_name>.img,ioemu:hda,w', 'file:/root/ubuntu-10.10-desktop-amd64.iso,hdc:cdrom,r' ]
+
+diff -r 0f36c2eec2e1 tools/firmware/hvmloader/Makefile
+--- a/tools/firmware/hvmloader/Makefile	Thu Jul 28 15:40:54 2011 +0100
++++ b/tools/firmware/hvmloader/Makefile	Fri Aug 05 17:58:27 2011 +0800
 @@ -43,6 +43,19 @@
  CFLAGS += -DENABLE_ROMBIOS
  ROMBIOS_ROM := $(ROMBIOS_DIR)/BIOS-bochs-latest
@@ -61,9 +79,9 @@ diff -r fa4e2ca9ecff tools/firmware/hvmloader/Makefile
  ifneq ($(STDVGA_ROM),)
  	echo "#ifdef ROM_INCLUDE_VGABIOS" >> $@.new
  	sh ./mkhex vgabios_stdvga $(STDVGA_ROM) >> $@.new
-diff -r fa4e2ca9ecff tools/firmware/hvmloader/config.h
---- a/tools/firmware/hvmloader/config.h	Tue Jul 26 18:37:32 2011 +0100
-+++ b/tools/firmware/hvmloader/config.h	Thu Aug 04 23:44:56 2011 +0800
+diff -r 0f36c2eec2e1 tools/firmware/hvmloader/config.h
+--- a/tools/firmware/hvmloader/config.h	Thu Jul 28 15:40:54 2011 +0100
++++ b/tools/firmware/hvmloader/config.h	Fri Aug 05 17:58:27 2011 +0800
 @@ -3,7 +3,7 @@
  
  #include <stdint.h>
@@ -90,10 +108,10 @@ diff -r fa4e2ca9ecff tools/firmware/hvmloader/config.h
  
  #define PAGE_SHIFT 12
  #define PAGE_SIZE  (1ul << PAGE_SHIFT)
-diff -r fa4e2ca9ecff tools/firmware/hvmloader/hvmloader.c
---- a/tools/firmware/hvmloader/hvmloader.c	Tue Jul 26 18:37:32 2011 +0100
-+++ b/tools/firmware/hvmloader/hvmloader.c	Thu Aug 04 23:44:56 2011 +0800
-@@ -360,6 +360,8 @@
+diff -r 0f36c2eec2e1 tools/firmware/hvmloader/hvmloader.c
+--- a/tools/firmware/hvmloader/hvmloader.c	Thu Jul 28 15:40:54 2011 +0100
++++ b/tools/firmware/hvmloader/hvmloader.c	Fri Aug 05 17:58:27 2011 +0800
+@@ -361,6 +361,8 @@
  #ifdef ENABLE_SEABIOS
      { "seabios", &seabios_config, },
  #endif
@@ -102,7 +120,7 @@ diff -r fa4e2ca9ecff tools/firmware/hvmloader/hvmloader.c
      { NULL, NULL }
  };
  
-@@ -400,7 +402,11 @@
+@@ -420,7 +422,11 @@
      printf("CPU speed is %u MHz\n", get_cpu_mhz());
  
      apic_setup();
@@ -115,7 +133,7 @@ diff -r fa4e2ca9ecff tools/firmware/hvmloader/hvmloader.c
  
      smp_initialise();
  
-@@ -451,6 +457,8 @@
+@@ -471,6 +477,8 @@
              vgabios_sz = round_option_rom(
                  (*(uint8_t *)(VGABIOS_PHYSICAL_ADDRESS+2)) * 512);
              break;
@@ -124,9 +142,9 @@ diff -r fa4e2ca9ecff tools/firmware/hvmloader/hvmloader.c
          default:
              printf("No emulated VGA adaptor ...\n");
              break;
-diff -r fa4e2ca9ecff tools/firmware/hvmloader/ovmf.c
+diff -r 0f36c2eec2e1 tools/firmware/hvmloader/ovmf.c
 --- /dev/null	Thu Jan 01 00:00:00 1970 +0000
-+++ b/tools/firmware/hvmloader/ovmf.c	Thu Aug 04 23:44:56 2011 +0800
++++ b/tools/firmware/hvmloader/ovmf.c	Fri Aug 05 17:58:27 2011 +0800
 @@ -0,0 +1,394 @@
 +/*
 + * HVM OVMF UEFI support.
@@ -522,11 +540,11 @@ diff -r fa4e2ca9ecff tools/firmware/hvmloader/ovmf.c
 + * indent-tabs-mode: nil
 + * End:
 + */
-diff -r fa4e2ca9ecff tools/firmware/ovmf/ovmf-ia32-cirrus-vga.bin
+diff -r 0f36c2eec2e1 tools/firmware/ovmf/ovmf-ia32-cirrus-vga.bin
 Binary file tools/firmware/ovmf/ovmf-ia32-cirrus-vga.bin has changed
-diff -r fa4e2ca9ecff tools/firmware/ovmf/ovmf-ia32.bin
+diff -r 0f36c2eec2e1 tools/firmware/ovmf/ovmf-ia32.bin
 Binary file tools/firmware/ovmf/ovmf-ia32.bin has changed
-diff -r fa4e2ca9ecff tools/firmware/ovmf/ovmf-x64-cirrus-vga.bin
+diff -r 0f36c2eec2e1 tools/firmware/ovmf/ovmf-x64-cirrus-vga.bin
 Binary file tools/firmware/ovmf/ovmf-x64-cirrus-vga.bin has changed
-diff -r fa4e2ca9ecff tools/firmware/ovmf/ovmf-x64.bin
+diff -r 0f36c2eec2e1 tools/firmware/ovmf/ovmf-x64.bin
 Binary file tools/firmware/ovmf/ovmf-x64.bin has changed
