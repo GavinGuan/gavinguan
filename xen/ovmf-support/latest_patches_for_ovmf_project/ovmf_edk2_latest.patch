@@ -1602,349 +1602,11 @@ Index: OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf
 +[Depex]
 +  gEfiAcpiTableProtocolGuid
 +
-Index: OvmfPkg/PlatformPei/Platform.c
+Index: OvmfPkg/Include/Library/XenLib.h
 ===================================================================
---- OvmfPkg/PlatformPei/Platform.c	(revision 12068)
-+++ OvmfPkg/PlatformPei/Platform.c	(working copy)
-@@ -1,7 +1,9 @@
- /**@file
-   Platform PEI driver
- 
--  Copyright (c) 2006 - 2010, Intel Corporation. All rights reserved.<BR>
-+  Copyright (c) 2006 - 2011, Intel Corporation. All rights reserved.<BR>
-+  Copyright (c) 2011, Andrei Warkentin <andreiw@motorola.com>
-+
-   This program and the accompanying materials
-   are licensed and made available under the terms and conditions of the BSD License
-   which accompanies this distribution.  The full text of the license may be found at
-@@ -73,6 +75,22 @@
-     );
- }
- 
-+VOID
-+AddReservedMemoryBaseSizeHob (
-+  EFI_PHYSICAL_ADDRESS        MemoryBase,
-+  UINT64                      MemorySize
-+  )
-+{
-+  BuildResourceDescriptorHob (
-+    EFI_RESOURCE_MEMORY_RESERVED,
-+      EFI_RESOURCE_ATTRIBUTE_PRESENT     |
-+      EFI_RESOURCE_ATTRIBUTE_INITIALIZED |
-+      EFI_RESOURCE_ATTRIBUTE_UNCACHEABLE |
-+      EFI_RESOURCE_ATTRIBUTE_TESTED,
-+    MemoryBase,
-+    MemorySize
-+    );
-+}
- 
- VOID
- AddIoMemoryRangeHob (
-@@ -164,19 +182,19 @@
-   //
-   BuildResourceDescriptorHob (
-     EFI_RESOURCE_IO,
--      EFI_RESOURCE_ATTRIBUTE_PRESENT     |
--      EFI_RESOURCE_ATTRIBUTE_INITIALIZED,
--    0x1000,
--    0xF000
-+    EFI_RESOURCE_ATTRIBUTE_PRESENT     |
-+    EFI_RESOURCE_ATTRIBUTE_INITIALIZED,
-+    0xC000,
-+    0x4000
-     );
- 
-   //
-   // Add PCI MMIO space available to PCI resource allocations
-   //
-   if (TopOfMemory < BASE_2GB) {
--    AddIoMemoryBaseSizeHob (BASE_2GB, 0xFEC00000 - BASE_2GB);
-+    AddIoMemoryBaseSizeHob (BASE_2GB, 0xFC000000 - BASE_2GB);
-   } else {
--    AddIoMemoryBaseSizeHob (TopOfMemory, 0xFEC00000 - TopOfMemory);
-+    AddIoMemoryBaseSizeHob (TopOfMemory, 0xFC000000 - TopOfMemory);
-   }
- 
-   //
-@@ -198,6 +216,7 @@
- 
- VOID
- MiscInitialization (
-+  BOOLEAN Xen
-   )
- {
-   //
-@@ -210,10 +229,12 @@
-   //
-   BuildCpuHob (36, 16);
- 
--  //
--  // Set the PM I/O base address to 0x400
--  //
--  PciAndThenOr32 (PCI_LIB_ADDRESS (0, 1, 3, 0x40), (UINT32) ~0xfc0, 0x400);
-+  if (!Xen) {
-+    //
-+    // Set the PM I/O base address to 0x400
-+    //
-+    PciAndThenOr32 (PCI_LIB_ADDRESS (0, 1, 3, 0x40), (UINT32) ~0xfc0, 0x400);
-+  }
- }
- 
- 
-@@ -294,21 +315,30 @@
-   IN CONST EFI_PEI_SERVICES     **PeiServices
-   )
- {
-+  EFI_STATUS            Status;
-   EFI_PHYSICAL_ADDRESS  TopOfMemory;
-+  BOOLEAN               Xen;
- 
--  DEBUG ((EFI_D_ERROR, "Platform PEIM Loaded\n"));
--
-   DebugDumpCmos ();
- 
-   TopOfMemory = MemDetect ();
- 
-+  Status = InitializeXen ();
-+  Xen = EFI_ERROR (Status) ? FALSE : TRUE;
-+
-+  DEBUG ((EFI_D_ERROR, "Platform PEIM Loaded\n"));
-+
-+  //DebugDumpCmos ();
-+
-+  //TopOfMemory = MemDetect ();
-+
-   ReserveEmuVariableNvStore ();
- 
-   PeiFvInitialization ();
- 
-   MemMapInitialization (TopOfMemory);
- 
--  MiscInitialization ();
-+  MiscInitialization (Xen);
- 
-   BootModeInitialization ();
- 
-Index: OvmfPkg/PlatformPei/Platform.h
-===================================================================
---- OvmfPkg/PlatformPei/Platform.h	(revision 12068)
-+++ OvmfPkg/PlatformPei/Platform.h	(working copy)
-@@ -1,7 +1,7 @@
- /** @file
-   Platform PEI module include file.
- 
--  Copyright (c) 2006 - 2007, Intel Corporation. All rights reserved.<BR>
-+  Copyright (c) 2006 - 2011, Intel Corporation. All rights reserved.<BR>
-   This program and the accompanying materials
-   are licensed and made available under the terms and conditions of the BSD License
-   which accompanies this distribution.  The full text of the license may be found at
-@@ -46,6 +46,12 @@
-   );
- 
- VOID
-+AddReservedMemoryBaseSizeHob (
-+  EFI_PHYSICAL_ADDRESS        MemoryBase,
-+  UINT64                      MemorySize
-+  );
-+
-+VOID
- AddUntestedMemoryRangeHob (
-   EFI_PHYSICAL_ADDRESS        MemoryBase,
-   EFI_PHYSICAL_ADDRESS        MemoryLimit
-@@ -61,4 +67,9 @@
-   VOID
-   );
- 
-+EFI_STATUS
-+InitializeXen (
-+  VOID
-+  );
-+
- #endif // _PLATFORM_PEI_H_INCLUDED_
-Index: OvmfPkg/PlatformPei/Xen.c
-===================================================================
---- OvmfPkg/PlatformPei/Xen.c	(revision 0)
-+++ OvmfPkg/PlatformPei/Xen.c	(revision 0)
-@@ -0,0 +1,144 @@
-+/**@file
-+  Xen Platform PEI support
-+
-+  Copyright (c) 2006 - 2011, Intel Corporation. All rights reserved.<BR>
-+  Copyright (c) 2011, Andrei Warkentin <andreiw@motorola.com>
-+
-+  This program and the accompanying materials
-+  are licensed and made available under the terms and conditions of the BSD License
-+  which accompanies this distribution.  The full text of the license may be found at
-+  http://opensource.org/licenses/bsd-license.php
-+
-+  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
-+  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
-+
-+**/
-+
-+//
-+// The package level header files this module uses
-+//
-+#include <PiPei.h>
-+
-+//
-+// The Library classes this module consumes
-+//
-+#include <Library/DebugLib.h>
-+#include <Library/HobLib.h>
-+#include <Library/MemoryAllocationLib.h>
-+#include <Library/PcdLib.h>
-+#include <Guid/XenInfo.h>
-+
-+#include "Platform.h"
-+
-+EFI_XEN_INFO mXenInfo;
-+
-+
-+/**
-
-+  Connects to the Hypervisor.
-+ 
-+  @param  XenLeaf     CPUID index used to connect.
-+
-+  @return EFI_STATUS
-+
-+**/
-+EFI_STATUS
-+XenConnect (
-+  UINT32 XenLeaf
-+  )
-+{
-+  UINT32 Index;
-+  UINT32 TransferReg;
-+  UINT32 TransferPages;
-+  UINT32 XenVersion;
-+
-+  AsmCpuid (XenLeaf + 2, &TransferPages, &TransferReg, NULL, NULL);
-+  mXenInfo.HyperPages = AllocatePages (TransferPages);
-+  if (!mXenInfo.HyperPages) {
-+    return EFI_OUT_OF_RESOURCES;
-+  }
-+
-+  for (Index = 0; Index < TransferPages; Index++) {
-+    AsmWriteMsr64 (TransferReg,
-+                   (UINTN) mXenInfo.HyperPages +
-+                   (Index << EFI_PAGE_SHIFT) + Index);
-+  }
-+
-+  AsmCpuid (XenLeaf + 1, &XenVersion, NULL, NULL, NULL);
-+  DEBUG ((EFI_D_ERROR, "Detected Xen version %d.%d\n",
-+          XenVersion >> 16, XenVersion & 0xFFFF));
-+  mXenInfo.VersionMajor = XenVersion >> 16;
-+  mXenInfo.VersionMinor = XenVersion & 0xFFFF;
-+
-+  /* TBD: Locate hvm_info and reserve it away. */
-+  mXenInfo.HvmInfo = NULL;
-+
-+  BuildGuidDataHob (
-+    &gEfiXenInfoGuid,
-+    &mXenInfo,
-+    sizeof(mXenInfo)
-+    );
-+
-+  return EFI_SUCCESS;
-+}
-+
-+/**
-+  Figures out if we are running inside Xen HVM.
-+
-+  @return UINT32     CPUID index used to connect to HV.
-+
-+**/
-+UINT32
-+XenDetect (
-+  VOID
-+  )
-+{
-+
-+  UINT32 XenLeaf;
-+  UINT8 Signature[13];
-+
-+  for (XenLeaf = 0x40000000; XenLeaf < 0x40010000; XenLeaf += 0x100) {
-+    AsmCpuid (XenLeaf, NULL, (UINT32 *) &Signature[0],
-+              (UINT32 *) &Signature[4],
-+              (UINT32 *) &Signature[8]);
-+    Signature[12] = '\0';
-+
-+    if (!AsciiStrCmp ((CHAR8 *) Signature, "XenVMMXenVMM")) {
-+      return XenLeaf;
-+    }
-+  }
-+
-+  return 0;
-+}
-+
-+/**
-+  Perform Xen PEI initialization.
-+
-+  @return EFI_SUCCESS     Xen initialized successfully
-+  @return EFI_NOT_FOUND   Not running under Xen
-+
-+**/
-+EFI_STATUS
-+InitializeXen (
-+  VOID
-+  )
-+{
-+  UINT32 XenLeaf;
-+
-+  XenLeaf = XenDetect ();
-+
-+  if (XenLeaf == 0) {
-+    return EFI_NOT_FOUND;
-+  }
-+
-+  DEBUG ((EFI_D_INFO, "Xen was detected\n"));
-+
-+  XenConnect (XenLeaf);
-+
-+  //
-+  // Reserve away HVMLOADER reserved memory [0xFC000000,0xFD000000).
-+  // This needs to match HVMLOADER RESERVED_MEMBASE/RESERVED_MEMSIZE.
-+  //
-+  AddReservedMemoryBaseSizeHob (0xFC000000, 0x1000000);
-+
-+  return EFI_SUCCESS;
-+}
-Index: OvmfPkg/PlatformPei/PlatformPei.inf
-===================================================================
---- OvmfPkg/PlatformPei/PlatformPei.inf	(revision 12068)
-+++ OvmfPkg/PlatformPei/PlatformPei.inf	(working copy)
-@@ -2,7 +2,7 @@
- #  Platform PEI driver
- #
- #  This module provides platform specific function to detect boot mode.
--#  Copyright (c) 2006 - 2010, Intel Corporation. All rights reserved.<BR>
-+#  Copyright (c) 2006 - 2011, Intel Corporation. All rights reserved.<BR>
- #
- #  This program and the accompanying materials
- #  are licensed and made available under the terms and conditions of the BSD License
-@@ -33,6 +33,7 @@
-   Fv.c
-   MemDetect.c
-   Platform.c
-+  Xen.c
- 
- [Packages]
-   MdePkg/MdePkg.dec
-@@ -41,6 +42,7 @@
- 
- [Guids]
-   gEfiMemoryTypeInformationGuid
-+  gEfiXenInfoGuid
- 
- [LibraryClasses]
-   DebugLib
-Index: OvmfPkg/Include/Protocol/Hypercall.h
-===================================================================
---- OvmfPkg/Include/Protocol/Hypercall.h	(revision 0)
-+++ OvmfPkg/Include/Protocol/Hypercall.h	(revision 0)
-@@ -0,0 +1,436 @@
+--- OvmfPkg/Include/Library/XenLib.h	(revision 0)
++++ OvmfPkg/Include/Library/XenLib.h	(revision 0)
+@@ -0,0 +1,376 @@
 +/** @file
 +
 +  XEN_HV_PROTOCOL protocol allows consumers to log SMBIOS data records, and enables the producer 
@@ -1961,65 +1623,440 @@ Index: OvmfPkg/Include/Protocol/Hypercall.h
 +
 +**/
 +
-+#ifndef _XEN_HV_PROTOCOL_H_
-+#define _XEN_HV_PROTOCOL_H_
++#ifndef __XEN_LIB__
++#define __XEN_LIB__
 +
-+#define EFI_XEN_HV_PROTOCOL_GUID \
-+    { 0x90d9933f, 0x0f3f, 0x4027, { 0xaa, 0x7c, 0x05, 0x44, 0xb6, 0x62, 0x38, 0x5f }}
++/**
++  All Xen PV driver need struct and methods are defined here.
++
++**/
++
++///
++/// Guest OS interface to Xen.
++///
++#define DOMID_FIRST_RESERVED (0x7FF0U)
++#define DOMID_SELF           (0x7FF0U)
++#define DOMID_IO             (0x7FF1U)
++#define DOMID_XEN            (0x7FF2U)
++#define DOMID_COW            (0x7FF3U)
++#define DOMID_INVALID        (0x7FF4U)
++#define DOMID_IDLE           (0x7FFFU)
++
++///
++/// For HVM-guest Xenbus implementation.
++///
++#define HVM_PARAM_STORE_PFN    1
++#define HVM_PARAM_STORE_EVTCHN 2
++
++
++///
++/// For Xen Version Hypercall
++///
++#define XENVER_VERSION         0
++#define XENVER_EXTRAVERSION    1
++typedef CHAR8 XenExtraversion[16];
++
 +
 +//
-+// HYPERCALLS
++// For HVM Hypercall (HYPERVISOR_HVM_OP)
 +//
-+#define HYPERVISOR_SET_TRAP_TABLE        0
-+#define HYPERVISOR_MMU_UPDATE            1
-+#define HYPERVISOR_SET_GDT               2
-+#define HYPERVISOR_STACK_SWITCH          3
-+#define HYPERVISOR_SET_CALLBACKS         4
-+#define HYPERVISOR_FPU_TASKSWITCH        5
-+#define HYPERVISOR_SCHED_OP_COMPAT       6 /* compat since 0x00030101 */
-+#define HYPERVISOR_PLATFORM_OP           7
-+#define HYPERVISOR_SET_DEBUGREG          8
-+#define HYPERVISOR_GET_DEBUGREG          9
-+#define HYPERVISOR_UPDATE_DESCRIPTOR    10
-+#define HYPERVISOR_MEMORY_OP            12
-+#define HYPERVISOR_MULTICALL            13
-+#define HYPERVISOR_UPDATE_VA_MAPPING    14
-+#define HYPERVISOR_SET_TIMER_OP         15
-+#define HYPERVISOR_EVENT_CHANNEL_OP_COMPAT 16 /* compat since 0x00030202 */
-+#define HYPERVISOR_XEN_VERSION          17
-+#define HYPERVISOR_CONSOLE_IO           18
-+#define HYPERVISOR_PHYSDEV_OP_COMPAT    19 /* compat since 0x00030202 */
-+#define HYPERVISOR_GRANT_TABLE_OP       20
-+#define HYPERVISOR_VM_ASSIST            21
-+#define HYPERVISOR_UPDATE_VA_MAPPING_OTHERDOMAIN 22
-+#define HYPERVISOR_IRET                 23 /* x86 only */
-+#define HYPERVISOR_VCPU_OP              24
-+#define HYPERVISOR_SET_SEGMENT_BASE     25 /* x86/64 only */
-+#define HYPERVISOR_MMUEXT_OP            26
-+#define HYPERVISOR_XSM_OP               27
-+#define HYPERVISOR_NMI_OP               28
-+#define HYPERVISOR_SCHED_OP             29
-+#define HYPERVISOR_CALLBACK_OP          30
-+#define HYPERVISOR_XENOPROF_OP          31
-+#define HYPERVISOR_EVENT_CHANNEL_OP     32
-+#define HYPERVISOR_PHYSDEV_OP           33
-+#define HYPERVISOR_HVM_OP               34
-+#define HYPERVISOR_SYSCTL               35
-+#define HYPERVISOR_DOMCTL               36
-+#define HYPERVISOR_KEXEC_OP             37
-+#define HYPERVISOR_TMEM_OP              38
++#define HVMOP_SET_PARAM        0
++#define HVMOP_GET_PARAM        1
++typedef UINT16 DOMID;
++typedef struct {
++  DOMID             DomId;
++  UINT32            Index;
++  UINTN             Value;
++} EFI_XEN_HVM_PARAM;
 +
-+/* Architecture-specific hypercall definitions. */
-+#define HYPERVISOR_ARCH_0               48
-+#define HYPERVISOR_ARCH_1               49
-+#define HYPERVISOR_ARCH_2               50
-+#define HYPERVISOR_ARCH_3               51
-+#define HYPERVISOR_ARCH_4               52
-+#define HYPERVISOR_ARCH_5               53
-+#define HYPERVISOR_ARCH_6               54
-+#define HYPERVISOR_ARCH_7               55
 +
-+typedef struct _EFI_XEN_HV_PROTOCOL EFI_XEN_HV_PROTOCOL;
++//
++// For Sched Hypercall (HYPERVISOR_SCHED_OP)
++//
++#define SCHEDOP_POLL           3
++typedef struct {
++  UINT32           *Ptr;
++} XEN_GUEST_HANDLE;
++
++typedef struct {
++  XEN_GUEST_HANDLE  Ports;
++  UINT32            NrPorts;
++  UINTN             Timeout;
++} SCHED_POLL;
++
++
++//
++// For Memory Hypercall (HYPERVISOR_MEMORY_OP)
++//
++typedef UINTN    XEN_PFN;
++
++#define XENMEM_ADD_TO_PHYSMAP          7
++#define XENMAPSPACE_SHARED_INFO        0
++#define XENMAPSPACE_GRANT_TABLE        1
++#define XENMAPSPACE_Gmfn               2
++#define XENMAPIDX_GRANT_TABLE_STATUS   0x80000000
++typedef struct {
++  //
++  // Which domain to change the mapping for.
++  //
++  DOMID          DomId;
++  //
++  // Source mapping space.
++  //
++  UINT32         Space;
++  //
++  // Index into source mapping space.
++  //
++  UINTN          Index;
++  //
++  // GPFN (Guset Page Frame Number) where the source mapping page should appear.
++  //
++  XEN_PFN        Gpfn;
++} XEN_ADD_TO_PHYSMAP;
++
++
++
++///
++/// Event Channel stuff
++///
++typedef UINT32 EFI_EVENT_CHANNEL_PORT;
++
++//
++// Send an event to the remote end of the channel whose local endpoint is Port.
++//
++#define EVTCHNOP_SEND         4
++typedef struct {
++  EFI_EVENT_CHANNEL_PORT  Port;
++} EVENT_CHANNEL_SEND;
++
++
++
++///
++/// Xenbus stuff
++///
++
++//
++// Xen Store socket message type between Xen Store Daemon and client library or Guest VM.
++//
++typedef enum {
++  XSDebug,
++  XSDirectory,
++  XSRead,
++  XSGetPerms,
++  XSWatch,
++  XSUnwatch,
++  XSTransactionStart,
++  XSTransactionEnd,
++  XSIntroduce,
++  XSRelease,
++  XSGetDomainPath,
++  XSWrite,
++  XSMkdir,
++  XSRm,
++  XSSetPerms,
++  XSWatchEvent,
++  XSError,
++  XSIsDomainIntroduced,
++  XSResume,
++  XSSetTarget,
++  XSRestrict
++} EFI_XENSTORE_MSG_TYPE;
++
++//
++// Xen Store message struct 
++//
++typedef struct {
++  //
++  // Xen Store socket message type
++  //
++  EFI_XENSTORE_MSG_TYPE    Type;
++  //
++  // Request identifier
++  //
++  UINT32                   RequestId;
++  //
++  // Transaction id. If don't use transactions, just set 0.
++  //
++  UINT32                   TransactionId;
++  //
++  // Length of data following this
++  //
++  UINT32                   Length;
++} EFI_XENSTORE_MSG;
++
++//
++// Xen Store request
++//
++typedef struct {
++  CHAR8                    *Data;
++  UINTN                    Length;
++} EFI_XENSTORE_REQUEST;
++
++//
++// Inter-domain shared memory communications.
++//
++#define XENSTORE_RING_SIZE 1024
++typedef UINT32 XENSTORE_RING_IDX;
++typedef struct {
++  //
++  // Requests to Xenstore daemon.
++  //
++  CHAR8               Req[XENSTORE_RING_SIZE];
++  //
++  // Replies from Xenstore daemon.
++  //
++  CHAR8               Rsp[XENSTORE_RING_SIZE];
++
++  XENSTORE_RING_IDX   ReqCons;
++  XENSTORE_RING_IDX   ReqProd;
++  XENSTORE_RING_IDX   RspCons;
++  XENSTORE_RING_IDX   RspProd;
++} EFI_XENSTORE_DOMAIN_INTERFACE;
++
++#define XENSTORE_PAYLOAD_MAX  4096
++
++/**
++  Connect to the backend Xenbus daemon. 
++  This method must be called first before any Xenbus operation.
++
++  @return              EFI_STATUS.
++
++**/
++EFI_STATUS
++EFIAPI
++XenbusSetup (
++  VOID
++  );
++
++/**
++  Reset the Xenbus connection.
++
++  @return              EFI_STATUS.
++
++**/
++EFI_STATUS
++EFIAPI
++XenbusShutdown (
++  VOID
++  );
++
++/** 
++  Read a Xenstore key. Returns a nul-terminated string or NULL.
++
++  @param IN Path       The Xenstore key path.
++  @param IN Buffer     The value to assgin to the key.
++
++  @return              EFI_STATUS.
++
++**/
++EFI_STATUS
++EFIAPI
++XenstoreRead (
++  IN     CHAR8                    *Path,
++  OUT    CHAR8                    **Buffer
++  );
++
++/** 
++  Write a key-value pair in Xenstore.
++
++  @param IN Path       The Xenstore key path.
++  @param IN Buffer     The value to assgin to the key.
++
++  @return              EFI_STATUS.
++
++**/
++EFI_STATUS
++EFIAPI
++XenstoreWrite (
++  IN     CHAR8                    *Path,
++  IN     CHAR8                    *Buffer
++  );
++
++
++///
++/// Common functions used by Xen PV mechanism
++///
++
++//
++// Maximum number of virtual CPUs in multi-processor guests.
++//
++#define XEN_LEGACY_MAX_VCPUS 32
++
++typedef struct {
++  //
++  // Max PFN (Physical Frame Number).
++  //
++  UINTN                 MaxPfn;
++  //
++  // Frame containing list of mfns containing list of mfns containing p2m.
++  //
++  XEN_PFN               P2MFrameListList;
++
++  UINTN                 NmiReason;
++  UINT64                Pad[32];
++} ARCH_SHARED_INFO;
++
++//
++// TODO layout this struct for different platform (IA32 and X64).
++//
++typedef struct {
++  UINTN                 CR2;
++  //UINTN                 Pad[5];  //For Ia32
++  UINTN                 Pad;       //For X64
++} ARCH_VCPU_INFO;
++
++typedef struct {
++  UINT32                Version;
++  UINT32                Pad0;
++  //
++  // TSC time at last update of time value.
++  //
++  UINT64                TscTimestamp;
++  //
++  // Time, in nanosecs, since boot.
++  //
++  UINT64                SystemTime;
++  //
++  // Current system time.
++  //
++  UINT32                TscToSystemMul;
++  INT8                  TscShift;
++  INT8                  Pad1[3];
++} VCPU_TIME_INFO;
++
++typedef struct {
++  UINT8                 EvtChnUpcallPending;
++  UINT8                 EvtChnUpcallMask;
++  UINTN                 EvtChnPendingSel;
++  
++  ARCH_VCPU_INFO        Arch;
++  VCPU_TIME_INFO        Time;
++} VCPU_INFO;
++
++//
++// EFI_XEN_SHARED_INFO: Xen shared_info_page
++//
++typedef struct {
++  VCPU_INFO             VcpuInfo[XEN_LEGACY_MAX_VCPUS];
++  //
++  // Each channel is associated with two bits of information: PENDING and MASK.
++  //
++  UINTN                 EventChannelPending[sizeof (UINTN) * 8];
++  UINTN                 EventChannelMask[sizeof (UINTN) * 8];
++  //
++  // Wallclock time.
++  //
++  UINT32                WallClockVersion;
++  UINT32                WallClockSecond;
++  UINT32                WallClockNanosecond;
++
++  ARCH_SHARED_INFO      Arch;
++} EFI_XEN_SHARED_INFO;
++
++/**
++  Get shared info page.
++
++  @return A pointer to shared info page.
++
++**/
++VOID *
++EFIAPI
++GetSharedInfo (
++  VOID
++  );
++
++/**
++  Test and clear one bit at a gavin address.
++
++  @param IN BitNum   The number of bit to operate.
++  @param IN Addr     The address to operate.
++
++  @return  The old value of the bit.
++
++**/
++UINTN
++EFIAPI
++SyncTestClearBit (
++  IN     UINTN                    BitNum,
++  IN     VOID                     *Addr
++  );
++
++#endif //__XEN_LIB__
++
+Index: OvmfPkg/Include/Library/XenHypercallLib.h
+===================================================================
+--- OvmfPkg/Include/Library/XenHypercallLib.h	(revision 0)
++++ OvmfPkg/Include/Library/XenHypercallLib.h	(revision 0)
+@@ -0,0 +1,516 @@
++/** @file
++
++  This library provides consumers all Xen Hypercall.
++
++  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++  This program and the accompanying materials                          
++  are licensed and made available under the terms and conditions of the BSD License         
++  which accompanies this distribution.  The full text of the license may be found at        
++  http://opensource.org/licenses/bsd-license.php                                            
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,                     
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.             
++
++**/
++
++#ifndef __XEN_HYPERCALL_LIB__
++#define __XEN_HYPERCALL_LIB__
++
++//
++// HYPERCALLS NUMBER
++//
++#define HYPERVISOR_SET_TRAP_TABLE          0//
++#define HYPERVISOR_MMU_UPDATE              1//
++#define HYPERVISOR_SET_GDT                 2//
++#define HYPERVISOR_STACK_SWITCH            3//
++#define HYPERVISOR_SET_CALLBACKS           4//
++#define HYPERVISOR_FPU_TASKSWITCH          5//
++#define HYPERVISOR_SCHED_OP_COMPAT         6
++#define HYPERVISOR_PLATFORM_OP             7
++#define HYPERVISOR_SET_DEBUGREG            8//
++#define HYPERVISOR_GET_DEBUGREG            9//
++#define HYPERVISOR_UPDATE_DESCRIPTOR       10//
++#define HYPERVISOR_MEMORY_OP               12   //
++#define HYPERVISOR_MULTICALL               13//
++#define HYPERVISOR_UPDATE_VA_MAPPING       14//
++#define HYPERVISOR_SET_TIMER_OP            15//
++#define HYPERVISOR_EVENT_CHANNEL_OP_COMPAT 16
++#define HYPERVISOR_XEN_VERSION             17   //
++#define HYPERVISOR_CONSOLE_IO              18//
++#define HYPERVISOR_PHYSDEV_OP_COMPAT       19
++#define HYPERVISOR_GRANT_TABLE_OP          20   //
++#define HYPERVISOR_VM_ASSIST               21//
++#define HYPERVISOR_UPDATE_VA_MAPPING_OTHERDOMAIN 22//
++#define HYPERVISOR_IRET                    23
++#define HYPERVISOR_VCPU_OP                 24//
++#define HYPERVISOR_SET_SEGMENT_BASE        25//
++#define HYPERVISOR_MMUEXT_OP               26//
++#define HYPERVISOR_XSM_OP                  27
++#define HYPERVISOR_NMI_OP                  28//
++#define HYPERVISOR_SCHED_OP                29   //
++#define HYPERVISOR_CALLBACK_OP             30
++#define HYPERVISOR_XENOPROF_OP             31
++#define HYPERVISOR_EVENT_CHANNEL_OP        32   //
++#define HYPERVISOR_PHYSDEV_OP              33//
++#define HYPERVISOR_HVM_OP                  34   //
++#define HYPERVISOR_SYSCTL                  35//
++#define HYPERVISOR_DOMCTL                  36//
++#define HYPERVISOR_KEXEC_OP                37
++#define HYPERVISOR_TMEM_OP                 38
++
++#define HYPERVISOR_ARCH_0                  48
++#define HYPERVISOR_ARCH_1                  49
++#define HYPERVISOR_ARCH_2                  50
++#define HYPERVISOR_ARCH_3                  51
++#define HYPERVISOR_ARCH_4                  52
++#define HYPERVISOR_ARCH_5                  53
++#define HYPERVISOR_ARCH_6                  54
++#define HYPERVISOR_ARCH_7                  55
 +
 +/**
 +  Hypercall methods.
@@ -2028,485 +2065,490 @@ Index: OvmfPkg/Include/Protocol/Hypercall.h
 +  @param[in]    TODO parameters description
 +
 +**/
-+typedef
++/**
++  Hypercall #0: HYPERVISOR_SET_TRAP_TABLE
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_SET_TRAP_TABLE)(
++EFIAPI
++HypervisorSetTrapTable (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #1: HYPERVISOR_MMU_UPDATE
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_MMU_UPDATE )(
++EFIAPI
++HypervisorMmuUpdate (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #2: HYPERVISOR_SET_GDT
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_SET_GDT)(
++EFIAPI
++HypervisorSetGdt (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #3: HYPERVISOR_STACK_SWITCH
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_STACK_SWITCH)(
++EFIAPI
++HypervisorStackSwitch (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #4: HYPERVISOR_SET_CALLBACKS
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_SET_CALLBACKS)(
++EFIAPI
++HypervisorSetCallbacks (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #5: HYPERVISOR_FPU_TASKSWITCH
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_FPU_TASKSWITCH)(
++EFIAPI
++HypervisorFpuTaskswitch (
 +  IN UINTN      Cmd
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #6: HYPERVISOR_SCHED_OP_COMPAT
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_SCHED_OP_COMPAT)(
++EFIAPI
++HypervisorSchedOpCompat (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #7: HYPERVISOR_PLATFORM_OP
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_PLATFORM_OP)(
++EFIAPI
++HypervisorPlatformOp (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #8: HYPERVISOR_SET_DEBUGREG
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_SET_DEBUGREG)(
++EFIAPI
++HypervisorSetDebugreg (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #9: HYPERVISOR_GET_DEBUGREG
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_GET_DEBUGREG)(
++EFIAPI
++HypervisorGetDebugreg (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #10: HYPERVISOR_UPDATE_DESCRIPTOR
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_UPDATE_DESCRIPTOR)(
++EFIAPI
++HypervisorUpdateDescriptor (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #12: HYPERVISOR_MEMORY_OP
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_MEMORY_OP)(
-+  //TODO Add parameters
-+);
-+
-+typedef
-+EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_MULTICALL)(
-+  //TODO Add parameters
-+);
-+
-+typedef
-+EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_UPDATE_VA_MAPPING)(
-+  //TODO Add parameters
-+);
-+
-+typedef
-+EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_SET_TIMER_OP)(
-+  //TODO Add parameters
-+);
-+
-+typedef
-+EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_EVENT_CHANNEL_OP_COMPAT)(
-+  //TODO Add parameters
-+);
-+
-+typedef
-+EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_XEN_VERSION)(
++EFIAPI
++HypervisorMemoryOp (
 +  IN UINTN      Cmd,
 +  IN VOID       *Arg
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #13: HYPERVISOR_MULTICALL
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_CONSOLE_IO)(
++EFIAPI
++HypervisorMulticall (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #14: HYPERVISOR_UPDATE_VA_MAPPING
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_PHYSDEV_OP_COMPAT)(
++EFIAPI
++HypervisorUpdateVaMapping (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++
++/**
++  Hypercall #15: HYPERVISOR_SET_TIMER_OP
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_GRANT_TABLE_OP)(
++EFIAPI
++HypervisorSetTimerOp (
++  //TODO Add parameters
++  );
++
++
++/**
++  Hypercall #16: HYPERVISOR_EVENT_CHANNEL_OP_COMPAT
++**/
++EFI_STATUS
++EFIAPI
++HypervisorEventChannelOpCompat (
++  //TODO Add parameters
++  );
++
++/**
++  Hypercall #17: HYPERVISOR_XEN_VERSION
++**/
++EFI_STATUS
++EFIAPI
++HypervisorXenVersion (
++  IN UINTN Cmd,
++  IN VOID  *Arg
++  );
++
++/**
++  Hypercall #18: HYPERVISOR_CONSOLE_IO
++**/
++EFI_STATUS
++EFIAPI
++HypervisorConsoleIo (
++  //TODO Add parameters
++  );
++
++/**
++  Hypercall #19: HYPERVISOR_PHYSDEV_OP_COMPAT
++**/
++EFI_STATUS
++EFIAPI
++HypervisorPhysdevOpCompat (
++  //TODO Add parameters
++  );
++
++/**
++  Hypercall #20: HYPERVISOR_GRANT_TABLE_OP
++**/
++EFI_STATUS
++EFIAPI
++HypervisorGrantTableOp(
 +  IN UINTN      Cmd,
 +  IN VOID       *Uop,
 +  IN UINTN      Count
 +);
 +
-+typedef
++/**
++  Hypercall #21: HYPERVISOR_VM_ASSIST
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_VM_ASSIST)(
++EFIAPI
++HypervisorVmAssist (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #22: HYPERVISOR_UPDATE_VA_MAPPING_OTHERDOMAIN
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_UPDATE_VA_MAPPING_OTHERDOMAIN)(
++EFIAPI
++HypervisorUpdateVaMappingOtherdomain (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #23: HYPERVISOR_IRET
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_IRET)(
++EFIAPI
++HypervisorIret (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #24: HYPERVISOR_VCPU_OP
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_VCPU_OP)(
++EFIAPI
++HypervisorVcpuOp (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #25: HYPERVISOR_SET_SEGMENT_BASE
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_SET_SEGMENT_BASE)(
++EFIAPI
++HypervisorSetSegmentBase (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #26: HYPERVISOR_MMUEXT_OP
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_MMUEXT_OP)(
++EFIAPI
++HypervisorMmuextOp (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #27: HYPERVISOR_XSM_OP
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_XSM_OP)(
++EFIAPI
++HypervisorXsmOp (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #28: HYPERVISOR_NMI_OP
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_NMI_OP)(
++EFIAPI
++HypervisorNmiOp (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #29: HYPERVISOR_SCHED_OP
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_SCHED_OP)(
++EFIAPI
++HypervisorSchedOp (
 +  IN UINTN      Cmd,
 +  IN VOID       *Arg
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #30: HYPERVISOR_CALLBACK_OP
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_CALLBACK_OP)(
++EFIAPI
++HypervisorCallbackOp (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #31: HYPERVISOR_XENOPROF_OP
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_XENOPROF_OP)(
++EFIAPI
++HypervisorXenoprofOp (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #32: HYPERVISOR_EVENT_CHANNEL_OP
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_EVENT_CHANNEL_OP)(
-+  IN UINTN      Cmd,
-+  IN VOID       *Arg
-+);
++EFIAPI
++HypervisorEventChannelOp (
++  IN UINTN Cmd,
++  IN VOID  *Arg
++  );
 +
-+typedef
++/**
++  Hypercall #33: HYPERVISOR_PHYSDEV_OP 
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_PHYSDEV_OP)(
++EFIAPI
++HypervisorPhysdevOp (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #34: HYPERVISOR_HVM_OP
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_HVM_OP)(
-+  IN UINTN      Cmd,
-+  IN VOID       *Arg
-+);
++EFIAPI
++HypervisorHvmOp (
++  IN UINTN Cmd,
++  IN VOID  *Arg
++  );
 +
-+typedef
++/**
++  Hypercall #35: HYPERVISOR_SYSCTL
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_SYSCTL)(
++EFIAPI
++HypervisorSysctl (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #36: HYPERVISOR_DOMCTL
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_DOMCTL)(
++EFIAPI
++HypervisorDomctl (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #37: HYPERVISOR_KEXEC_OP
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_KEXEC_OP)(
++EFIAPI
++HypervisorKexecOp (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #38: HYPERVISOR_TMEM_OP
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_TMEM_OP)(
++EFIAPI
++HypervisorTmemOp (
 +  //TODO Add parameters
-+);
++  );
 +
 +//
 +// Architecture-specific hypercall definitions.
 +//
-+typedef
++/**
++  Hypercall #48: HYPERVISOR_ARCH_0
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_ARCH_0)(
++EFIAPI
++HypervisorArch0 (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #49: HYPERVISOR_ARCH_1
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_ARCH_1)(
++EFIAPI
++HypervisorArch1 (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #50: HYPERVISOR_ARCH_2
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_ARCH_2)(
++EFIAPI
++HypervisorArch2 (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #51: HYPERVISOR_ARCH_3
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_ARCH_3)(
++EFIAPI
++HypervisorArch3 (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #52: HYPERVISOR_ARCH_4
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_ARCH_4)(
++EFIAPI
++HypervisorArch4 (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #53: HYPERVISOR_ARCH_5
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_ARCH_5)(
++EFIAPI
++HypervisorArch5 (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #54: HYPERVISOR_ARCH_6
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_ARCH_6)(
++EFIAPI
++HypervisorArch6 (
 +  //TODO Add parameters
-+);
++  );
 +
-+typedef
++/**
++  Hypercall #55: HYPERVISOR_ARCH_7
++**/
 +EFI_STATUS
-+(EFIAPI *EFI_HYPERVISOR_ARCH_7)(
++EFIAPI
++HypervisorArch7 (
 +  //TODO Add parameters
-+);
++  );
 +
-+
-+struct _EFI_XEN_HV_PROTOCOL {
-+  ///
-+  /// Protocol methods are hypercalls
-+  ///
-+
-+  EFI_HYPERVISOR_SET_TRAP_TABLE        HypervisorSetTrapTable;
-+  EFI_HYPERVISOR_MMU_UPDATE            HypervisorMmuUpdate;
-+  EFI_HYPERVISOR_SET_GDT               HypervisorSetGdt;
-+  EFI_HYPERVISOR_STACK_SWITCH          HypervisorStackSwitch;
-+  EFI_HYPERVISOR_SET_CALLBACKS         HypervisorSetCallbacks;
-+  EFI_HYPERVISOR_FPU_TASKSWITCH        HypervisorFpuTaskswitch;
-+  EFI_HYPERVISOR_SCHED_OP_COMPAT       HypervisorSchedOpCompat;
-+  EFI_HYPERVISOR_PLATFORM_OP           HypervisorPlatformOp;
-+  EFI_HYPERVISOR_SET_DEBUGREG          HypervisorSetDebugreg;
-+  EFI_HYPERVISOR_GET_DEBUGREG          HypervisorGetDebugreg;
-+  EFI_HYPERVISOR_UPDATE_DESCRIPTOR     HypervisorUpdateDescriptor;
-+  EFI_HYPERVISOR_MEMORY_OP             HypervisorMemoryOp;
-+  EFI_HYPERVISOR_MULTICALL             HypervisorMulticall;
-+  EFI_HYPERVISOR_UPDATE_VA_MAPPING     HypervisorUpdateVaMapping;
-+  EFI_HYPERVISOR_SET_TIMER_OP          HypervisorSetTimerOp;
-+  EFI_HYPERVISOR_EVENT_CHANNEL_OP_COMPAT HypervisorEventChannelOpCompat;
-+  EFI_HYPERVISOR_XEN_VERSION           HypervisorXenVersion;
-+  EFI_HYPERVISOR_CONSOLE_IO            HypervisorConsoleIo;
-+  EFI_HYPERVISOR_PHYSDEV_OP_COMPAT     HypervisorPhysdevOpCompat;
-+  EFI_HYPERVISOR_GRANT_TABLE_OP        HypervisorGrantTableOp;
-+  EFI_HYPERVISOR_VM_ASSIST             HypervisorVmAssist;
-+  EFI_HYPERVISOR_UPDATE_VA_MAPPING_OTHERDOMAIN HypervisorUpdateVaMappingOtherdomain;
-+  EFI_HYPERVISOR_IRET                  HypervisorIret;
-+  EFI_HYPERVISOR_VCPU_OP               HypervisorVcpuOp;
-+  EFI_HYPERVISOR_SET_SEGMENT_BASE      HypervisorSetSegmentBase;
-+  EFI_HYPERVISOR_MMUEXT_OP             HypervisorMmuextOp;
-+  EFI_HYPERVISOR_XSM_OP                HypervisorXsmOp;
-+  EFI_HYPERVISOR_NMI_OP                HypervisorNmiOp;
-+  EFI_HYPERVISOR_SCHED_OP              HypervisorSchedOp;
-+  EFI_HYPERVISOR_CALLBACK_OP           HypervisorCallbackOp;
-+  EFI_HYPERVISOR_XENOPROF_OP           HypervisorXenoprofOp;
-+  EFI_HYPERVISOR_EVENT_CHANNEL_OP      HypervisorEventChannelOp;
-+  EFI_HYPERVISOR_PHYSDEV_OP            HypervisorPhysdevOp;
-+  EFI_HYPERVISOR_HVM_OP                HypervisorHvmOp;
-+  EFI_HYPERVISOR_SYSCTL                HypervisorSysctl;
-+  EFI_HYPERVISOR_DOMCTL                HypervisorDomctl;
-+  EFI_HYPERVISOR_KEXEC_OP              HypervisorKexecOp;
-+  EFI_HYPERVISOR_TMEM_OP               HypervisorTmemOp;
-+
-+  EFI_HYPERVISOR_ARCH_0                HypervisorArch0;
-+  EFI_HYPERVISOR_ARCH_1                HypervisorArch1;
-+  EFI_HYPERVISOR_ARCH_2                HypervisorArch2;
-+  EFI_HYPERVISOR_ARCH_3                HypervisorArch3;
-+  EFI_HYPERVISOR_ARCH_4                HypervisorArch4;
-+  EFI_HYPERVISOR_ARCH_5                HypervisorArch5;
-+  EFI_HYPERVISOR_ARCH_6                HypervisorArch6;
-+  EFI_HYPERVISOR_ARCH_7                HypervisorArch7;
-+
-+  ///
-+  /// Hypervisor major version.
-+  ///
-+  UINT16 MajorVersion;
-+  ///
-+  /// Hypervisor minor version.
-+  ///
-+  UINT16 MinorVersion;
-+};
-+
-+extern EFI_GUID gEfiXenHvProtocolGuid;
-+
-+#endif // _XEN_HV_PROTOCOL_H_
-+
-Index: OvmfPkg/Include/Library/XenLib.h
-===================================================================
---- OvmfPkg/Include/Library/XenLib.h	(revision 0)
-+++ OvmfPkg/Include/Library/XenLib.h	(revision 0)
-@@ -0,0 +1,37 @@
-+/** @file
-+
-+  XEN_HV_PROTOCOL protocol allows consumers to log SMBIOS data records, and enables the producer 
-+  to create the SMBIOS tables for a platform.
-+
-+  Copyright (c) 2006 - 2008, Intel Corporation. All rights reserved.<BR>
-+  This program and the accompanying materials                          
-+  are licensed and made available under the terms and conditions of the BSD License         
-+  which accompanies this distribution.  The full text of the license may be found at        
-+  http://opensource.org/licenses/bsd-license.php                                            
-+
-+  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,                     
-+  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.             
++/**
++  Initialize the hypercalls: Get Xen Hypercall page from HOB.
++  
++  @param[out]   A pointer to hypercall page.
 +
 +**/
++VOID *
++InitializeHypercallPage (
++  VOID
++  );
 +
-+#ifndef _XEN_LIB_H_
-+#define _XEN_LIB_H_
++#endif  //__XEN_HYPERCALL_LIB__
 +
-+
-+/*
-+* For Xen Version Hypercall
-+*/
-+#define XENVER_VERSION         0
-+/* arg == xen_extraversion_t. */
-+#define XENVER_EXTRAVERSION    1
-+typedef CHAR8 XenExtraversion[16];
-+
-+
-+
-+
-+
-+
-+
-+
-+#endif
-+
-Index: OvmfPkg/Include/Guid/XenInfo.h
-===================================================================
---- OvmfPkg/Include/Guid/XenInfo.h	(revision 12068)
-+++ OvmfPkg/Include/Guid/XenInfo.h	(working copy)
-@@ -40,3 +40,45 @@
- extern EFI_GUID gEfiXenInfoGuid;
- 
- #endif
-+/** @file
-+  XenInfo HOB passed by PEI into DXE.
-+
-+Copyright (c) 2011, Andrei Warkentin <andreiw@motorola.com>
-+This program and the accompanying materials are licensed and made available under
-+the terms and conditions of the BSD License that accompanies this distribution.
-+The full text of the license may be found at
-+http://opensource.org/licenses/bsd-license.php.
-+
-+THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
-+WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
-+
-+**/
-+
-+#ifndef __XEN_INFO_H__
-+#define __XEN_INFO_H__
-+
-+#define EFI_XEN_INFO_GUID \
-+    { 0xd3b46f3b, 0xd441, 0x1244, {0x9a, 0x12, 0x0, 0x12, 0x27, 0x3f, 0xc1, 0x4d } }
-+
-+typedef struct {
-+  ///
-+  /// Beginning of the hypercall page.
-+  ///
-+  VOID *HyperPages;
-+  ///
-+  /// Location of the hvm_info page.
-+  ///
-+  VOID *HvmInfo;
-+  ///
-+  /// Hypervisor major version.
-+  ///
-+  UINT16 VersionMajor;
-+  ///
-+  /// Hypervisor minor version.
-+  ///
-+  UINT16 VersionMinor;
-+} EFI_XEN_INFO;
-+
-+extern EFI_GUID gEfiXenInfoGuid;
-+
-+#endif
 Index: OvmfPkg/OvmfPkgX64.dsc
 ===================================================================
---- OvmfPkg/OvmfPkgX64.dsc	(revision 12068)
+--- OvmfPkg/OvmfPkgX64.dsc	(revision 12124)
 +++ OvmfPkg/OvmfPkgX64.dsc	(working copy)
-@@ -300,9 +300,15 @@
+@@ -79,6 +79,8 @@
+   UefiApplicationEntryPoint|MdePkg/Library/UefiApplicationEntryPoint/UefiApplicationEntryPoint.inf
+   DevicePathLib|MdePkg/Library/UefiDevicePathLib/UefiDevicePathLib.inf
+   NvVarsFileLib|OvmfPkg/Library/NvVarsFileLib/NvVarsFileLib.inf
++  XenHypercallLib|OvmfPkg/Library/XenHypercallLib/XenHypercallLib.inf
++  XenLib|OvmfPkg/Library/XenLib/XenLib.inf
+   FileHandleLib|ShellPkg/Library/UefiFileHandleLib/UefiFileHandleLib.inf
+   UefiCpuLib|UefiCpuPkg/Library/BaseUefiCpuLib/BaseUefiCpuLib.inf
+   SecurityManagementLib|MdeModulePkg/Library/DxeSecurityManagementLib/DxeSecurityManagementLib.inf
+@@ -300,9 +302,12 @@
    }
  
    MdeModulePkg/Core/RuntimeDxe/RuntimeDxe.inf
 +  #
-+  # Xen PV Dxe and Test
++  # Xen PV Library Test
 +  #
-+  OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.inf
 +  OvmfPkg/HypercallTestDxe/HypercallTestDxe.inf
    MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
    MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
-   MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
-+  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
+-  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
    PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
    UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
    UefiCpuPkg/CpuDxe/CpuDxe.inf
-@@ -370,7 +376,7 @@
+@@ -367,6 +372,12 @@
+   IntelFrameworkModulePkg/Bus/Isa/IsaFloppyDxe/IsaFloppyDxe.inf
+ 
+   #
++  # SMBIOS Support
++  #
++  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
++  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
++
++  #
    # ACPI Support
    #
    MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
--  MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
-+  OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf
-   OvmfPkg/AcpiTables/AcpiTables.inf
- 
-   #
 Index: OvmfPkg/HypercallTestDxe/HypercallTestDxe.inf
 ===================================================================
 --- OvmfPkg/HypercallTestDxe/HypercallTestDxe.inf	(revision 0)
 +++ OvmfPkg/HypercallTestDxe/HypercallTestDxe.inf	(revision 0)
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,52 @@
 +## @file
 +#  Xen PV test.
 +#
@@ -2548,18 +2590,14 @@ Index: OvmfPkg/HypercallTestDxe/HypercallTestDxe.inf
 +[LibraryClasses]
 +  UefiDriverEntryPoint
 +  UefiBootServicesTableLib
++  XenHypercallLib
++  XenLib
 +  DebugLib
 +  HobLib
-+
 +  BaseLib
-+
-+[Protocols]
-+  gEfiXenHvProtocolGuid                       # PROTOCOL ALWAYS_PRODUCED
 +
 +[Guids]
 +  gEfiXenInfoGuid
-+
-+[FixedPcd]
 +
 +[Depex]
 +  TRUE
@@ -2567,7 +2605,7 @@ Index: OvmfPkg/HypercallTestDxe/HypercallTestDxe.c
 ===================================================================
 --- OvmfPkg/HypercallTestDxe/HypercallTestDxe.c	(revision 0)
 +++ OvmfPkg/HypercallTestDxe/HypercallTestDxe.c	(revision 0)
-@@ -0,0 +1,149 @@
+@@ -0,0 +1,157 @@
 +/** @file
 +  Xen PV test Dxe.
 +
@@ -2585,16 +2623,10 @@ Index: OvmfPkg/HypercallTestDxe/HypercallTestDxe.c
 +
 +#include "HypercallTestDxe.h"
 +
-+//
-+// SMBIOS entry point structure
-+//
-+EFI_XEN_HV_PROTOCOL         *gXenHypercall;
-+
-+
 +/**
-+  Print String (For Hypercall test)
++  Helper functions: print a string. (For Hypercall test)
 +**/
-+INTN
++UINTN
 +EFIAPI
 +PrintAsciiStr (
 +  IN      CONST CHAR8               *FirstString,
@@ -2629,54 +2661,62 @@ Index: OvmfPkg/HypercallTestDxe/HypercallTestDxe.c
 +  XenExtraversion    ExtraVersion;
 +
 +  Major = 0; Minor = 0;
-+  Minor = gXenHypercall->HypervisorXenVersion(XENVER_VERSION, 0);
++  Minor = HypervisorXenVersion(XENVER_VERSION, 0);
 +  Major = Minor >> 16;
 +  Minor &= 0xFFFF;
-+  DEBUG ((EFI_D_INFO, "[TestInfo_CallHypercallFromOtherDXE]OVMF is running on Xen version: %d.%d\n", Major, Minor));
++  DEBUG ((EFI_D_INFO, "[TestInfo_CallHypercallFromDXE]OVMF is running on Xen version: %d.%d\n", Major, Minor));
 +
-+  Status = gXenHypercall->HypervisorXenVersion(XENVER_EXTRAVERSION, ExtraVersion);
++  Status = HypervisorXenVersion(XENVER_EXTRAVERSION, ExtraVersion);
 +  ASSERT_EFI_ERROR (Status);
-+  DEBUG ((EFI_D_INFO, "[TestInfo_CallHypercallFromOtherDXE]Detected Xen "));
++  DEBUG ((EFI_D_INFO, "[TestInfo_CallHypercallFromDXE]Detected Xen"));
 +  PrintAsciiStr(ExtraVersion, 16);
 +
 +  return EFI_SUCCESS;
 +}
 +
 +/**
-+  Initialize the Xen Hypercall methods. Check if we are in Xen HVM firstly.
-+
-+  @retval EFI_SUCCESS    Smbios protocol installed
-+  @retval Other          No protocol installed, unload driver.
++  Test XenBus: Read and write a key-value pair in Xenstore.
 +
 +**/
 +EFI_STATUS
 +EFIAPI
-+HypercallInitialize (
++XenbusTestFunc (
 +  VOID
 +  )
 +{
-+  EFI_STATUS                Status;
-+  EFI_HOB_GUID_TYPE         *GuidHob;
++  //
++  // Pointer to the value of "hvmloader/bios" in Xenstore.
++  //
++  CHAR8            *XenstoreValue;
 +
 +  //
-+  // See if a XenInfo HOB is available
++  // Set Xenbus.
 +  //
-+  GuidHob = GetFirstGuidHob (&gEfiXenInfoGuid);
-+  if (GuidHob == NULL) {
-+    return EFI_NOT_FOUND;
-+  }
++  XenbusSetup ();
++
 +  //
-+  // We are running inside Xen HVM. Then, find the Xen EFI_XEN_HV_PROTOCOL.
++  // Read the value of a key from xenstore.
 +  //
-+  Status = gBS->LocateProtocol (
-+                  &gEfiXenHvProtocolGuid,
-+                  NULL,
-+                  (VOID**)&gXenHypercall
-+                  );
-+  if (EFI_ERROR (Status)) {
-+    return Status;
-+  }
-+  
++  XenstoreValue = NULL;
++  XenstoreRead ("hvmloader/bios", &XenstoreValue);
++  DEBUG ((EFI_D_INFO, "[TestInfo_Xenbus_ReadXenstore] Old HVM BIOS (hvmloader/bios): "));
++  PrintAsciiStr(XenstoreValue, 30);
++
++  //
++  // Modify the value of a key in xenstore.
++  // TODO modify failed!!
++  //
++  XenstoreWrite ("hvmloader/bios", "ovmf-pv-test");
++  DEBUG ((EFI_D_INFO, "[TestInfo_Xenbus_WriteXenstore] Write to Xenstore\n"));
++  XenstoreRead ("hvmloader/bios", &XenstoreValue);
++  DEBUG ((EFI_D_INFO, "[TestInfo_Xenbus_WriteXenstore] New HVM BIOS (hvmloader/bios): "));
++  PrintAsciiStr(XenstoreValue, 30);
++
++  //
++  // Clear the Xenbus.
++  //
++  XenbusShutdown();
++
 +  return EFI_SUCCESS;
 +}
 +
@@ -2697,21 +2737,27 @@ Index: OvmfPkg/HypercallTestDxe/HypercallTestDxe.c
 +  IN EFI_SYSTEM_TABLE     *SystemTable
 +  )
 +{
-+  EFI_STATUS                Status;
++  VOID *HypercallPages;
 +
 +  //
-+  // Initialize the Xen Hypercall.
++  // Test if we can use Xen Hypercalls.
 +  //
-+  Status = HypercallInitialize();
-+  if (EFI_ERROR (Status)) {
-+      DEBUG ((EFI_D_ERROR, "HVM hypercall initialization failed!\n"));
-+      return Status;
++  HypercallPages = InitializeHypercallPage ();
++  if (HypercallPages == NULL) {
++    DEBUG ((EFI_D_ERROR, "Can't find HVM hypercall page!\n"));
++    return 0;
 +  }
 + 
 +  //
-+  // Other code here
++  // Test Xen Hypercall.
 +  //
 +  HypercallTestFunc();
++
++  //
++  // Test Xenbus.
++  // Read or Write a key-value in xenstore
++  //
++  XenbusTestFunc();
 +
 +
 +  return EFI_SUCCESS;
@@ -2721,7 +2767,7 @@ Index: OvmfPkg/HypercallTestDxe/HypercallTestDxe.h
 ===================================================================
 --- OvmfPkg/HypercallTestDxe/HypercallTestDxe.h	(revision 0)
 +++ OvmfPkg/HypercallTestDxe/HypercallTestDxe.h	(revision 0)
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,31 @@
 +/** @file
 +  Xen PV test Dxe.
 +
@@ -2742,148 +2788,1212 @@ Index: OvmfPkg/HypercallTestDxe/HypercallTestDxe.h
 +
 +#include <PiDxe.h>
 +
-+#include <Protocol/Hypercall.h>
-+#include <Guid/XenInfo.h>
++#include <Library/XenHypercallLib.h>
++#include <Library/XenLib.h>
 +#include <Library/HobLib.h>
 +#include <Library/DebugLib.h>
 +#include <Library/UefiBootServicesTableLib.h>
 +#include <Library/UefiDriverEntryPoint.h>
-+#include <Library/XenLib.h>
-+
 +#include <Library/BaseLib.h>
++#include <Guid/XenInfo.h>
 +
 +#endif
 +
 Index: OvmfPkg/OvmfPkgIa32.fdf
 ===================================================================
---- OvmfPkg/OvmfPkgIa32.fdf	(revision 12068)
+--- OvmfPkg/OvmfPkgIa32.fdf	(revision 12124)
 +++ OvmfPkg/OvmfPkgIa32.fdf	(working copy)
-@@ -150,9 +150,15 @@
+@@ -150,9 +150,12 @@
  INF  MdeModulePkg/Universal/PCD/Dxe/Pcd.inf
  
  INF  MdeModulePkg/Core/RuntimeDxe/RuntimeDxe.inf
 +#
-+# Xen PV Dxe and Test
++# Xen PV Library Test
 +#
-+INF  OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.inf
 +INF  OvmfPkg/HypercallTestDxe/HypercallTestDxe.inf
  INF  MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
  INF  MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
- INF  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
-+INF  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
+-INF  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
  INF  PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
  INF  UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
  INF  UefiCpuPkg/CpuDxe/CpuDxe.inf
-@@ -199,7 +205,7 @@
+@@ -198,6 +201,9 @@
+ INF  IntelFrameworkModulePkg/Bus/Isa/Ps2KeyboardDxe/Ps2keyboardDxe.inf
  INF  IntelFrameworkModulePkg/Bus/Isa/IsaFloppyDxe/IsaFloppyDxe.inf
  
++INF  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
++INF  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
++
  INF  MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
--INF  MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
-+INF  OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf
+ INF  MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
  INF  RuleOverride=ACPITABLE OvmfPkg/AcpiTables/AcpiTables.inf
- 
- INF  RuleOverride = BINARY FatBinPkg/EnhancedFatDxe/Fat.inf
-Index: OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.h
+Index: OvmfPkg/OvmfPkgIa32X64.fdf
 ===================================================================
---- OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.h	(revision 0)
-+++ OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.h	(revision 0)
-@@ -0,0 +1,92 @@
+--- OvmfPkg/OvmfPkgIa32X64.fdf	(revision 12124)
++++ OvmfPkg/OvmfPkgIa32X64.fdf	(working copy)
+@@ -152,7 +152,6 @@
+ INF  MdeModulePkg/Core/RuntimeDxe/RuntimeDxe.inf
+ INF  MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
+ INF  MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
+-INF  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
+ INF  PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
+ INF  UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
+ INF  UefiCpuPkg/CpuDxe/CpuDxe.inf
+@@ -198,6 +197,9 @@
+ INF  IntelFrameworkModulePkg/Bus/Isa/Ps2KeyboardDxe/Ps2keyboardDxe.inf
+ INF  IntelFrameworkModulePkg/Bus/Isa/IsaFloppyDxe/IsaFloppyDxe.inf
+ 
++INF  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
++INF  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
++
+ INF  MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
+ INF  MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
+ INF  RuleOverride=ACPITABLE OvmfPkg/AcpiTables/AcpiTables.inf
+Index: OvmfPkg/OvmfPkgIa32.dsc
+===================================================================
+--- OvmfPkg/OvmfPkgIa32.dsc	(revision 12124)
++++ OvmfPkg/OvmfPkgIa32.dsc	(working copy)
+@@ -79,6 +79,8 @@
+   UefiApplicationEntryPoint|MdePkg/Library/UefiApplicationEntryPoint/UefiApplicationEntryPoint.inf
+   DevicePathLib|MdePkg/Library/UefiDevicePathLib/UefiDevicePathLib.inf
+   NvVarsFileLib|OvmfPkg/Library/NvVarsFileLib/NvVarsFileLib.inf
++  XenHypercallLib|OvmfPkg/Library/XenHypercallLib/XenHypercallLib.inf
++  XenLib|OvmfPkg/Library/XenLib/XenLib.inf
+   FileHandleLib|ShellPkg/Library/UefiFileHandleLib/UefiFileHandleLib.inf
+   UefiCpuLib|UefiCpuPkg/Library/BaseUefiCpuLib/BaseUefiCpuLib.inf
+   SecurityManagementLib|MdeModulePkg/Library/DxeSecurityManagementLib/DxeSecurityManagementLib.inf
+@@ -300,9 +302,12 @@
+   }
+ 
+   MdeModulePkg/Core/RuntimeDxe/RuntimeDxe.inf
++  #
++  # Xen PV Library Test
++  #
++  OvmfPkg/HypercallTestDxe/HypercallTestDxe.inf
+   MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
+   MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
+-  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
+   PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
+   UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
+   UefiCpuPkg/CpuDxe/CpuDxe.inf
+@@ -367,6 +372,12 @@
+   IntelFrameworkModulePkg/Bus/Isa/IsaFloppyDxe/IsaFloppyDxe.inf
+ 
+   #
++  # SMBIOS Support
++  #
++  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
++  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
++
++  #
+   # ACPI Support
+   #
+   MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
+Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.c
+===================================================================
+--- OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.c	(revision 0)
++++ OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.c	(revision 0)
+@@ -0,0 +1,170 @@
 +/** @file
++  This driver installs SMBIOS information for OVMF
 +
-+Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++  Copyright (c) 2011, Intel Corporation. All rights reserved.<BR>
 +
-+This program and the accompanying materials
-+are licensed and made available under the terms and conditions of the BSD License
-+which accompanies this distribution.  The full text of the license may be found at
-+http://opensource.org/licenses/bsd-license.php
++  This program and the accompanying materials
++  are licensed and made available under the terms and conditions of the BSD License
++  which accompanies this distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
 +
-+THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
-+WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
 +
 +**/
 +
-+#ifndef _PARA_VIRTUALIZATION_H_
-+#define _PARA_VIRTUALIZATION_H_
++#include "SmbiosPlatformDxe.h"
++
++
++/**
++  Validates the SMBIOS entry point structure
++
++  @param  EntryPointStructure  SMBIOS entry point structure
++
++  @retval TRUE   The entry point structure is valid
++  @retval FALSE  The entry point structure is not valid
++
++**/
++BOOLEAN
++IsEntryPointStructureValid (
++  IN SMBIOS_TABLE_ENTRY_POINT  *EntryPointStructure
++  )
++{
++  UINTN                     Index;
++  UINT8                     Length;
++  UINT8                     Checksum;
++  UINT8                     *BytePtr;
++
++  BytePtr = (UINT8*) EntryPointStructure;
++  Length = EntryPointStructure->EntryPointLength;
++  Checksum = 0;
++
++  for (Index = 0; Index < Length; Index++) {
++    Checksum += BytePtr[Index];
++  }
++
++  if (Checksum != 0) {
++    return FALSE;
++  } else {
++    return TRUE;
++  }
++}
++
++
++/**
++  Get SMBIOS record length.
++
++  @param  SmbiosTable   SMBIOS pointer.
++
++**/
++UINTN
++SmbiosTableLength (
++  IN SMBIOS_STRUCTURE_POINTER SmbiosTable
++  )
++{
++  CHAR8  *AChar;
++  UINTN  Length;
++
++  AChar = (CHAR8 *)(SmbiosTable.Raw + SmbiosTable.Hdr->Length);
++
++  //
++  // Each structure shall be terminated by a double-null (SMBIOS spec.7.1)
++  //
++  while ((*AChar != 0) || (*(AChar + 1) != 0)) {
++    AChar ++;
++  }
++  Length = ((UINTN)AChar - (UINTN)SmbiosTable.Raw + 2);
++
++  return Length;
++}
++
++
++/**
++  Install all structures from the given SMBIOS structures block
++
++  @param  Smbios               SMBIOS protocol
++  @param  EntryPointStructure  SMBIOS entry point structures block
++
++**/
++EFI_STATUS
++InstallAllStructures (
++  IN EFI_SMBIOS_PROTOCOL       *Smbios,
++  IN SMBIOS_TABLE_ENTRY_POINT  *EntryPointStructure
++  )
++{
++  EFI_STATUS                Status;
++  SMBIOS_STRUCTURE_POINTER  SmbiosTable;
++  EFI_SMBIOS_HANDLE         SmbiosHandle;
++
++  SmbiosTable.Raw = (UINT8*)(UINTN) EntryPointStructure->TableAddress;
++  if (SmbiosTable.Raw == NULL) {
++    return EFI_INVALID_PARAMETER;
++  }
++
++  while (SmbiosTable.Hdr->Type != 127) {
++    //
++    // Log the SMBIOS data for this structure
++    //
++    SmbiosHandle = 0;
++    Status = Smbios->Add (
++                       Smbios,
++                       NULL,
++                       &SmbiosHandle,
++                       (EFI_SMBIOS_TABLE_HEADER*) SmbiosTable.Raw
++                       );
++    ASSERT_EFI_ERROR (Status);
++
++    //
++    // Get the next structure address
++    //
++    SmbiosTable.Raw = (UINT8 *)(SmbiosTable.Raw + SmbiosTableLength (SmbiosTable));
++  }
++
++  return EFI_SUCCESS;
++}
++
++
++/**
++  Installs SMBIOS information for OVMF
++
++  @param ImageHandle     Module's image handle
++  @param SystemTable     Pointer of EFI_SYSTEM_TABLE
++
++  @retval EFI_SUCCESS    Smbios data successfully installed
++  @retval Other          Smbios data was not installed
++
++**/
++EFI_STATUS
++EFIAPI
++SmbiosTablePublishEntry (
++  IN EFI_HANDLE           ImageHandle,
++  IN EFI_SYSTEM_TABLE     *SystemTable
++  )
++{
++  EFI_STATUS                Status;
++  EFI_SMBIOS_PROTOCOL       *Smbios;
++  SMBIOS_TABLE_ENTRY_POINT  *EntryPointStructure;
++
++  //
++  // Find the SMBIOS protocol
++  //
++  Status = gBS->LocateProtocol (
++                  &gEfiSmbiosProtocolGuid,
++                  NULL,
++                  (VOID**)&Smbios
++                  );
++  if (EFI_ERROR (Status)) {
++    return Status;
++  }
++
++  //
++  // Add Xen SMBIOS data if found
++  //
++  EntryPointStructure = GetXenSmbiosTables ();
++  if (EntryPointStructure != NULL) {
++    Status = InstallAllStructures (Smbios, EntryPointStructure);
++  }
++
++  return Status;
++}
+Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.h
+===================================================================
+--- OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.h	(revision 0)
++++ OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.h	(revision 0)
+@@ -0,0 +1,56 @@
++/** @file
++  This driver installs SMBIOS information for OVMF
++
++  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++  Copyright (c) 2011, Intel Corporation. All rights reserved.<BR>
++
++  This program and the accompanying materials
++  are licensed and made available under the terms and conditions of the BSD License
++  which accompanies this distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#ifndef _SMBIOS_PLATFORM_DXE_H_
++#define _SMBIOS_PLATFORM_DXE_H_
 +
 +#include <PiDxe.h>
 +
-+#include <Protocol/Hypercall.h>
-+#include <Guid/XenInfo.h>
-+#include <Library/HobLib.h>
++#include <Protocol/Smbios.h>
++#include <IndustryStandard/SmBios.h>
 +#include <Library/DebugLib.h>
-+#include <Library/UefiBootServicesTableLib.h>
-+#include <Library/UefiDriverEntryPoint.h>
-+#include <Library/XenLib.h>
-+
 +#include <Library/BaseLib.h>
++#include <Library/BaseMemoryLib.h>
++#include <Library/UefiBootServicesTableLib.h>
 +
-+#include "GasketHypercall.h"
 +
 +/**
-+  Get Xen Hypercall page from HOB.
++  Locates the Xen SMBIOS data if it exists
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen SMBIOS data
 +
 +**/
-+VOID*
-+GetHypercallPage (
++SMBIOS_TABLE_ENTRY_POINT *
++GetXenSmbiosTables (
 +  VOID
 +  );
 +
++
 +/**
-+  Xen Hypercall
++  Validates the SMBIOS entry point structure
++
++  @param  EntryPointStructure  SMBIOS entry point structure
++
++  @retval TRUE   The entry point structure is valid
++  @retval FALSE  The entry point structure is not valid
++
++**/
++BOOLEAN
++IsEntryPointStructureValid (
++  IN SMBIOS_TABLE_ENTRY_POINT  *EntryPointStructure
++  );
++
++#endif
+Index: OvmfPkg/SmbiosPlatformDxe/Xen.c
+===================================================================
+--- OvmfPkg/SmbiosPlatformDxe/Xen.c	(revision 0)
++++ OvmfPkg/SmbiosPlatformDxe/Xen.c	(revision 0)
+@@ -0,0 +1,63 @@
++/** @file
++  Detect Xen hvmloader SMBIOS data for usage by OVMF.
++
++  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++  Copyright (c) 2011, Intel Corporation. All rights reserved.<BR>
++
++  This program and the accompanying materials
++  are licensed and made available under the terms and conditions of the BSD License
++  which accompanies this distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
 +
 +**/
 +
-+/**
-+  Xen Hypercall
++#include "SmbiosPlatformDxe.h"
++#include <Library/HobLib.h>
++#include <Guid/XenInfo.h>
 +
-+  @param  Cmd       parameter.
-+  @param  Arg       Parameter.
++#define XEN_SMBIOS_PHYSICAL_ADDRESS       0x000EB000
++#define XEN_SMBIOS_PHYSICAL_END           0x000F0000
++
++/**
++  Locates the Xen SMBIOS data if it exists
++
++  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen SMBIOS data
++
++**/
++SMBIOS_TABLE_ENTRY_POINT *
++GetXenSmbiosTables (
++  VOID
++  )
++{
++  UINT8                     *XenSmbiosPtr;
++  SMBIOS_TABLE_ENTRY_POINT  *XenSmbiosEntryPointStructure;
++  EFI_HOB_GUID_TYPE         *GuidHob;
++
++  //
++  // See if a XenInfo HOB is available
++  //
++  GuidHob = GetFirstGuidHob (&gEfiXenInfoGuid);
++  if (GuidHob == NULL) {
++    return NULL;
++  }
++
++  for (XenSmbiosPtr = (UINT8*) XEN_SMBIOS_PHYSICAL_ADDRESS;
++       XenSmbiosPtr < (UINT8*) XEN_SMBIOS_PHYSICAL_END;
++       XenSmbiosPtr += 0x10) {
++
++    XenSmbiosEntryPointStructure = (SMBIOS_TABLE_ENTRY_POINT *) XenSmbiosPtr;
++
++    if (!AsciiStrnCmp ((CHAR8 *) XenSmbiosEntryPointStructure->AnchorString, "_SM_", 4) &&
++        !AsciiStrnCmp ((CHAR8 *) XenSmbiosEntryPointStructure->IntermediateAnchorString, "_DMI_", 5) &&
++        IsEntryPointStructureValid (XenSmbiosEntryPointStructure)) {
++
++      return XenSmbiosEntryPointStructure;
++
++    }
++  }
++
++  return NULL;
++}
+Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
+===================================================================
+--- OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf	(revision 0)
++++ OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf	(revision 0)
+@@ -0,0 +1,57 @@
++## @file
++#  This driver installs SMBIOS information for OVMF
++#
++#  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++#  Copyright (c) 2011, Intel Corporation. All rights reserved.<BR>
++#
++#  This program and the accompanying materials
++#  are licensed and made available under the terms and conditions of the BSD License
++#  which accompanies this distribution. The full text of the license may be found at
++#  http://opensource.org/licenses/bsd-license.php
++#  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++#  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++#
++##
++
++[Defines]
++  INF_VERSION                    = 0x00010005
++  BASE_NAME                      = SmbiosPlatformDxe
++  FILE_GUID                      = 4110465d-5ff3-4f4b-b580-24ed0d06747a
++  MODULE_TYPE                    = DXE_DRIVER
++  VERSION_STRING                 = 1.0
++
++  ENTRY_POINT                    = SmbiosTablePublishEntry
++
++#
++# The following information is for reference only and not required by the build tools.
++#
++#  VALID_ARCHITECTURES           = IA32 X64 IPF EBC
++#
++
++[Sources]
++  SmbiosPlatformDxe.h
++  SmbiosPlatformDxe.c
++  Xen.c
++
++[Packages]
++  MdePkg/MdePkg.dec
++  MdeModulePkg/MdeModulePkg.dec
++  OvmfPkg/OvmfPkg.dec
++
++[LibraryClasses]
++  UefiBootServicesTableLib
++  BaseMemoryLib
++  BaseLib
++  UefiDriverEntryPoint
++  DebugLib
++  HobLib
++
++[Protocols]
++  gEfiSmbiosProtocolGuid                      # PROTOCOL ALWAYS_CONSUMED
++
++[Guids]
++  gEfiXenInfoGuid
++
++[Depex]
++  gEfiSmbiosProtocolGuid
++
+Index: OvmfPkg/OvmfPkgIa32X64.dsc
+===================================================================
+--- OvmfPkg/OvmfPkgIa32X64.dsc	(revision 12124)
++++ OvmfPkg/OvmfPkgIa32X64.dsc	(working copy)
+@@ -303,7 +303,6 @@
+   MdeModulePkg/Core/RuntimeDxe/RuntimeDxe.inf
+   MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
+   MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
+-  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
+   PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
+   UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
+   UefiCpuPkg/CpuDxe/CpuDxe.inf
+@@ -368,6 +367,12 @@
+   IntelFrameworkModulePkg/Bus/Isa/IsaFloppyDxe/IsaFloppyDxe.inf
+ 
+   #
++  # SMBIOS Support
++  #
++  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
++  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
++
++  #
+   # ACPI Support
+   #
+   MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
+Index: OvmfPkg/Library/XenLib/XenLib.c
+===================================================================
+--- OvmfPkg/Library/XenLib/XenLib.c	(revision 0)
++++ OvmfPkg/Library/XenLib/XenLib.c	(revision 0)
+@@ -0,0 +1,83 @@
++/**@file
++  This file holds the common functions used by xen paravirtualization.
++
++  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++  This program and the accompanying materials
++  are licensed and made available under the terms and conditions of the BSD License
++  which accompanies this distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#include "XenLib.h"
++
++/**
++  Get shared info page.
++
++  @return A pointer to shared info page.
++
++**/
++VOID *
++EFIAPI
++GetSharedInfo (
++  VOID
++  )
++{
++  static EFI_XEN_SHARED_INFO         *SharedInfoPtr = NULL;
++  XEN_ADD_TO_PHYSMAP                 AddPhysmap;
++
++  if (SharedInfoPtr != NULL) {
++    return (VOID *) SharedInfoPtr;
++  }
++
++  AddPhysmap.DomId  = DOMID_SELF; 
++  AddPhysmap.Space  = XENMAPSPACE_SHARED_INFO;
++  AddPhysmap.Index  = 0;
++
++  SharedInfoPtr   = (EFI_XEN_SHARED_INFO *)AllocatePages(EFI_PAGE_SIZE);
++  AddPhysmap.Gpfn = (UINTN)(SharedInfoPtr) >> EFI_PAGE_SHIFT;
++
++  if (HypervisorMemoryOp(XENMEM_ADD_TO_PHYSMAP, &AddPhysmap)) {
++    DEBUG ((EFI_D_ERROR, "Hypercall Error: can't get shared info page.\n"));
++    return NULL;
++  }
++
++  DEBUG ((EFI_D_INFO, "SharedInfoPtr = %x\n", SharedInfoPtr)); 
++  return (VOID *) SharedInfoPtr;
++}
++
++/**
++  Test and clear one bit at a gavin address.
++  TODO The method needs to be written as a assembly function.
++
++  @param IN BitNum   The number of bit to operate.
++  @param IN Addr     The address to operate.
++
++  @return  The old value of the bit.
++
++**/
++UINTN
++EFIAPI
++SyncTestClearBit (
++  IN     UINTN                    BitNum,
++  IN     VOID                     *Addr
++  )
++{
++  UINTN             OldBit;
++
++  __asm__ __volatile__ (
++    "lock          \n\t"
++    "btr  %2,  %1  \n\t"
++    "sbb  %0,  %0  \n\t"
++    : "=r" (OldBit), "=m" (*(volatile long *)Addr)
++    : "Ir" (BitNum), "m" (*(volatile long *)Addr) 
++    : "memory"
++    );
++
++  return OldBit;
++}
++
+Index: OvmfPkg/Library/XenLib/XenBus.c
+===================================================================
+--- OvmfPkg/Library/XenLib/XenBus.c	(revision 0)
++++ OvmfPkg/Library/XenLib/XenBus.c	(revision 0)
+@@ -0,0 +1,471 @@
++/**@file
++  This file holds the xenbus methods, which can setup xenbus, write and read xenstore entry.
++
++  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++  This program and the accompanying materials
++  are licensed and made available under the terms and conditions of the BSD License
++  which accompanies this distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#include "XenLib.h"
++
++//
++// Shared ring with Domain0
++//
++EFI_XENSTORE_DOMAIN_INTERFACE    *Rings = NULL;
++//
++// Event channel to Domain0
++//
++EFI_EVENT_CHANNEL_PORT            Event;
++static CHAR8                      Payload[XENSTORE_PAYLOAD_MAX + 1];
++
++
++/**
++  Helper functions: print a string.
++**/
++UINTN
++EFIAPI
++PrintStr (
++  IN      CONST CHAR8               *FirstString,
++  IN      UINTN                     Length
++  )
++{
++  ASSERT (AsciiStrSize (FirstString));
++
++  while ((*FirstString != '\0') && (Length > 0)) {
++    DEBUG ((EFI_D_INFO, "%c", *FirstString));
++    FirstString++;
++    Length--;
++  }
++
++  DEBUG ((EFI_D_INFO, "\n"));
++  return EFI_SUCCESS;
++}
++
++/**
++  Connect to the backend Xenbus daemon. 
++  This method must be called first before any Xenbus operation.
++
++  @return              EFI_STATUS.
 +
 +**/
 +EFI_STATUS
 +EFIAPI
-+HypervisorXenVersion (
-+  IN UINTN Cmd,
-+  IN VOID  *Arg
-+  );
++XenbusSetup (
++  VOID
++  )
++{
++  EFI_XEN_HVM_PARAM  Param;
 +
++  //
++  // Get Xenbus shared page.
++  //
++  Param.DomId = DOMID_SELF;
++  Param.Index = HVM_PARAM_STORE_PFN;
++  if ( HypervisorHvmOp(HVMOP_GET_PARAM, &Param) ) {
++    DEBUG ((EFI_D_ERROR, "Hypercall Error: can't get xenbus shared page.\n"));
++  }
++  Rings = (VOID *)(UINTN)(Param.Value << EFI_PAGE_SHIFT);
++
++  //
++  // Get Xenbus event channel.
++  //
++  Param.DomId = DOMID_SELF;
++  Param.Index = HVM_PARAM_STORE_EVTCHN;
++  if ( HypervisorHvmOp(HVMOP_GET_PARAM, &Param) ) {
++    DEBUG ((EFI_D_ERROR, "Hypercall Error: can't get xenbus event channel.\n"));
++  }
++  Event = Param.Value;
++
++  DEBUG ((EFI_D_INFO, "Xenbus rings @0x%x, event channel %d\n", (UINTN) Rings, (UINTN) Event));
++  return EFI_SUCCESS;
++}
++
++/**
++  Reset the Xenbus connection.
++
++  @return              EFI_STATUS.
++
++**/
 +EFI_STATUS
 +EFIAPI
-+HypervisorGrantTableOp(
-+  IN UINTN      Cmd,
-+  IN VOID       *Uop,
-+  IN UINTN      Count
-+);
++XenbusShutdown (
++  VOID
++  )
++{
++  ASSERT(Rings);
 +
++  //
++  // Clear the shared ring.
++  //
++  ZeroMem (Rings, sizeof (EFI_XENSTORE_DOMAIN_INTERFACE));  
++
++  //
++  // Clear the event channel state
++  //
++  ZeroMem(GetSharedInfo (), sizeof (EFI_XEN_SHARED_INFO));
++
++  Rings = NULL;
++  return EFI_SUCCESS;
++}
++
++/**
++  Shared Ring operation methods.
++**/
++VOID
++EFIAPI
++RingWait (
++  VOID
++  )
++{
++  EFI_XEN_SHARED_INFO      *SharedInfoPtr;
++  SCHED_POLL               Poll;
++
++  SharedInfoPtr = (EFI_XEN_SHARED_INFO *) GetSharedInfo ();
++
++  ZeroMem (&Poll, sizeof (SCHED_POLL));
++  Poll.Ports.Ptr = &Event;
++  Poll.NrPorts   = 1;
++
++  while ( !SyncTestClearBit(Event, SharedInfoPtr->EventChannelPending) ) {
++    HypervisorSchedOp (SCHEDOP_POLL, &Poll);
++  }
++}
++
++/**
++  Copy data in and out of the ring
++
++  @param IN Data      The data to write into the shared ring.
++  @param IN Length    The length of the data.
++
++**/
++VOID
++EFIAPI
++RingWrite (
++  IN     CHAR8                    *Data,
++  IN     UINTN                    Length
++  )
++{
++  UINT32           TotleOff;
++  UINT32           RingIndex;
++
++  //
++  // Check the parameters
++  //
++  ASSERT(Length <= XENSTORE_PAYLOAD_MAX);
++
++  RingIndex = XENSTORE_RING_SIZE - 1;
++  while (Length) {
++    //
++    // Keep don't overrun the consumer pointer.
++    //
++    while ((TotleOff = RingIndex - ((Rings->ReqProd - Rings->ReqCons) & RingIndex)) == 0) {
++      RingWait();
++    }
++
++    //
++    // Keep don't overrun the end of the shared ring.
++    //
++    if (TotleOff > (XENSTORE_RING_SIZE - (Rings->ReqProd & RingIndex))) {
++      TotleOff = XENSTORE_RING_SIZE - (Rings->ReqProd & RingIndex);
++    }
++
++    if (TotleOff > Length) {
++      TotleOff = Length;
++    }
++
++    //
++    // Copy the request data to the ring.
++    //
++    CopyMem (
++      Rings->Req + (Rings->ReqProd & RingIndex),
++      Data,
++      TotleOff
++      );
++    MemoryFence();
++    Rings->ReqProd += TotleOff;
++    Length -= TotleOff;
++  }
++}
++
++/**
++  Copy data in and out of the ring
++
++  @param IN Data      The data read from the shared ring.
++  @param IN Length    The length of the data.
++
++**/
++VOID
++EFIAPI
++RingRead (
++  IN     CHAR8                    *Data,
++  IN     UINTN                    Length
++  )
++{
++  UINT32           TotleOff;
++  UINT32           RingIndex;
++
++  //
++  // Check the parameters
++  //
++  ASSERT(Length <= XENSTORE_PAYLOAD_MAX);
++
++  RingIndex = XENSTORE_RING_SIZE - 1;
++  while (Length) {
++    //
++    // Keep don't overrun the productor pointer.
++    //
++    while ((TotleOff = ((Rings->RspProd - Rings->RspCons) & RingIndex)) == 0) {
++      RingWait();
++    }
++
++    //
++    // Keep don't overrun the end of the shared ring.
++    //
++    if (TotleOff > (XENSTORE_RING_SIZE - (Rings->RspCons & RingIndex))) {
++      TotleOff = XENSTORE_RING_SIZE - (Rings->RspCons & RingIndex);
++    }
++
++    if (TotleOff > Length) {
++      TotleOff = Length;
++    }
++
++    //
++    // Copy the reply data from the ring.
++    //
++    CopyMem (
++      Data,
++      Rings->Rsp + (Rings->RspCons & RingIndex),
++      TotleOff
++      );
++    MemoryFence();
++    Rings->RspCons += TotleOff;
++    Length -= TotleOff;
++  }
++}
++
++/**
++  Send a request to shared ring and wait for the answer.
++  Returns 0 for success, or an errno for error.
++
++  @param IN BitNum   The number of bit to operate.
++  @param IN Addr     The address to operate.
++
++  @return  The old value of the bit.
++
++**/
 +EFI_STATUS
 +EFIAPI
-+HypervisorSchedOp (
-+  IN UINTN      Cmd,
-+  IN VOID       *Arg
-+  );
++XenbusSend (
++  IN     EFI_XENSTORE_MSG_TYPE    Type,
++  IN     UINTN                    Length,
++  IN     CHAR8                    *Data,
++  OUT    UINTN                    *ReplyLength,
++  OUT    CHAR8                    **ReplyData
++  )
++{
++  EFI_XENSTORE_MSG              XenstoreMsg;
++  EVENT_CHANNEL_SEND            Send;
 +
++  //
++  // Check the shared ring.
++  //
++  ASSERT(Rings);
++
++  //
++  // Put the request on the shared ring.
++  //
++  XenstoreMsg.Type              = Type;
++  XenstoreMsg.RequestId         = 0;
++  XenstoreMsg.TransactionId     = 0;
++  XenstoreMsg.Length            = Length;
++
++  RingWrite ((CHAR8 *) &XenstoreMsg, sizeof (EFI_XENSTORE_MSG));
++  RingWrite (Data, Length);
++
++  //
++  // Tell Dom0 about the request.
++  //
++  Send.Port = Event;
++  HypervisorEventChannelOp(EVTCHNOP_SEND, &Send);
++
++  //
++  // Get the reply from the ring.
++  //
++  RingRead ((CHAR8 *) &XenstoreMsg, sizeof (EFI_XENSTORE_MSG));
++  RingRead (Payload, XenstoreMsg.Length);
++  Payload[XenstoreMsg.Length] = '\0';
++
++  if (XenstoreMsg.Type == XSError) {
++    *ReplyLength = 0;
++    return EFI_ABORTED;
++  }
++
++  *ReplyData    = Payload;
++  *ReplyLength  = XenstoreMsg.Length;
++
++  return EFI_SUCCESS;
++}
++
++/**
++  This method is a updated version of XenbusSend().
++  It can be used for XSWrite and XSRead.
++
++  @param IN BitNum   The number of bit to operate.
++  @param IN Addr     The address to operate.
++
++  @return  The old value of the bit.
++
++**/
 +EFI_STATUS
 +EFIAPI
-+HypervisorEventChannelOp (
-+  IN UINTN Cmd,
-+  IN VOID  *Arg
-+  );
++XenbusWriteSend (
++  IN     EFI_XENSTORE_MSG_TYPE    Type,
++  IN     CHAR8                    *Path,
++  IN     CHAR8                    *Data,
++  OUT    UINTN                    *ReplyLength,
++  OUT    CHAR8                    **ReplyData
++  )
++{
++  EFI_XENSTORE_MSG              XenstoreMsg;
++  EVENT_CHANNEL_SEND            Send;
++  EFI_XENSTORE_REQUEST          Request[2];
++  UINTN                         RequestNum;
++  UINTN                         Length;
++  UINTN                         Index;
++  
++  //
++  // Check the shared ring.
++  //
++  ASSERT(Rings);
 +
++  //
++  // Initialize the request
++  //
++  if (Type == XSWrite) {
++    Request[0].Data    = Path;
++    Request[0].Length  = AsciiStrLen (Path) + 1;
++    Request[1].Data    = Data;
++    Request[1].Length  = AsciiStrLen (Data);
++    RequestNum         = 2; 
++    Length             = Request[0].Length + Request[1].Length;
++  }
++  else {
++    Request[0].Data    = Path;
++    Request[0].Length  = AsciiStrLen (Path) + 1;
++    RequestNum         = 1; 
++    Length             = Request[0].Length;
++  }
++
++  //
++  // Put the request on the shared ring.
++  //
++  XenstoreMsg.Type              = Type;
++  XenstoreMsg.RequestId         = 0;
++  XenstoreMsg.TransactionId     = 0;
++  XenstoreMsg.Length            = Length;
++
++  RingWrite ((CHAR8 *) &XenstoreMsg, sizeof (EFI_XENSTORE_MSG));
++  for (Index = 0; Index < RequestNum; Index++) {
++    RingWrite (Request[Index].Data, Request[Index].Length);
++  }
++
++  //
++  // Tell Dom0 about the request.
++  //
++  Send.Port = Event;
++  HypervisorEventChannelOp(EVTCHNOP_SEND, &Send);
++
++  //
++  // Get the reply from the ring.
++  //
++  RingRead ((CHAR8 *) &XenstoreMsg, sizeof (EFI_XENSTORE_MSG));
++  RingRead (Payload, XenstoreMsg.Length);
++  Payload[XenstoreMsg.Length] = '\0';
++
++  if (XenstoreMsg.Type == XSError) {
++    *ReplyLength = 0;
++    return EFI_ABORTED;
++  }
++
++  *ReplyData    = Payload;
++  *ReplyLength  = XenstoreMsg.Length;
++
++  return EFI_SUCCESS;
++}
++
++/** 
++  Read a Xenstore key. Returns a nul-terminated string or NULL.
++
++  @param IN Path       The Xenstore key path.
++  @param IN Buffer     The value to assgin to the key.
++
++  @return              EFI_STATUS.
++
++**/
 +EFI_STATUS
 +EFIAPI
-+HypervisorHvmOp (
-+  IN UINTN Cmd,
-+  IN VOID  *Arg
-+  );
++XenstoreRead (
++  IN     CHAR8                    *Path,
++  OUT    CHAR8                    **Buffer
++  )
++{
++  UINTN        Length;
++  CHAR8        *Value;
 +
++  //
++  // Send request to Xen Store
++  //
++  Length = 0;
++  Value  = NULL;
 +
++  if ( XenbusSend(XSRead, AsciiStrLen (Path) + 1, Path, &Length, &Value) ) {
++  //if ( XenbusWriteSend(XSRead, Path, NULL, &Length, &Value) ) {
++    return EFI_NOT_FOUND;
++  }
++
++  //
++  // Get the key value, which terminated null.
++  //
++  *Buffer = Value;
++
++  return EFI_SUCCESS;
++}
++
++/** 
++  Write a key-value pair in Xenstore.
++
++  @param IN Path       The Xenstore key path.
++  @param IN Buffer     The value to assgin to the key.
++
++  @return              EFI_STATUS.
++
++**/
++EFI_STATUS
++EFIAPI
++XenstoreWrite (
++  IN     CHAR8                    *Path,
++  IN     CHAR8                    *Buffer
++  )
++{
++  UINTN        Length;
++  CHAR8        *Value;
++
++  //
++  // Send request to Xen Store
++  //
++  Length = 0;
++  Value  = NULL;
++  if ( XenbusWriteSend(XSWrite, Path, Buffer, &Length, &Value) ) {
++    return EFI_NOT_FOUND;
++  }
++
++  return EFI_SUCCESS;
++}
++
+Index: OvmfPkg/Library/XenLib/XenLib.h
+===================================================================
+--- OvmfPkg/Library/XenLib/XenLib.h	(revision 0)
++++ OvmfPkg/Library/XenLib/XenLib.h	(revision 0)
+@@ -0,0 +1,31 @@
++/**@file
++  Xenbus library.
++
++  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++  This program and the accompanying materials
++  are licensed and made available under the terms and conditions of the BSD License
++  which accompanies this distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#ifndef _XEN_LIB_H_
++#define _XEN_LIB_H_
++
++#include <PiDxe.h>
++
++#include <Library/MemoryAllocationLib.h>
++#include <Library/BaseMemoryLib.h>
++#include <Library/BaseLib.h>
++#include <Library/DebugLib.h>
++#include <Guid/XenInfo.h>
++
++#include <Library/XenHypercallLib.h>
++#include <Library/XenLib.h>
 +
 +#endif
 +
-Index: OvmfPkg/ParaVirtualizationDxe/X64/GasketHypercall.S
+Index: OvmfPkg/Library/XenLib/XenLib.inf
 ===================================================================
---- OvmfPkg/ParaVirtualizationDxe/X64/GasketHypercall.S	(revision 0)
-+++ OvmfPkg/ParaVirtualizationDxe/X64/GasketHypercall.S	(revision 0)
+--- OvmfPkg/Library/XenLib/XenLib.inf	(revision 0)
++++ OvmfPkg/Library/XenLib/XenLib.inf	(revision 0)
+@@ -0,0 +1,44 @@
++## @file
++#  Component description file for Xenbus Library module.
++#
++#  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++#  This program and the accompanying materials
++#  are licensed and made available under the terms and conditions of the BSD License
++#  which accompanies this distribution.  The full text of the license may be found at
++#  http://opensource.org/licenses/bsd-license.php
++#
++#  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++#  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++#
++##
++
++[Defines]
++  INF_VERSION                    = 0x00010005
++  BASE_NAME                      = XenLib
++  FILE_GUID                      = 62c85c20-5b0e-4937-9fc3-448370a60d04
++  MODULE_TYPE                    = BASE
++  VERSION_STRING                 = 1.0
++  LIBRARY_CLASS                  = XenLib|DXE_DRIVER DXE_RUNTIME_DRIVER DXE_SAL_DRIVER UEFI_DRIVER
++
++#
++# The following information is for reference only and not required by the build tools.
++#
++#  VALID_ARCHITECTURES           = IA32 X64 IPF
++#
++
++[Sources]
++  XenLib.h
++  XenLib.c
++  XenBus.c
++
++[Packages]
++  MdePkg/MdePkg.dec
++  OvmfPkg/OvmfPkg.dec
++
++[LibraryClasses]
++  MemoryAllocationLib
++  BaseMemoryLib
++  BaseLib
++  DebugLib
++
+Index: OvmfPkg/Library/XenHypercallLib/XenHypercallLib.inf
+===================================================================
+--- OvmfPkg/Library/XenHypercallLib/XenHypercallLib.inf	(revision 0)
++++ OvmfPkg/Library/XenHypercallLib/XenHypercallLib.inf	(revision 0)
+@@ -0,0 +1,56 @@
++## @file
++#  Component description file for Xen Hypercall Library module.
++#
++#  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++#
++#  This program and the accompanying materials
++#  are licensed and made available under the terms and conditions of the BSD License
++#  which accompanies this distribution. The full text of the license may be found at
++#  http://opensource.org/licenses/bsd-license.php
++#  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++#  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++#
++#
++##
++
++[Defines]
++  INF_VERSION                    = 0x00010005
++  BASE_NAME                      = XenHypercallLib
++  FILE_GUID                      = 0a5baf88-b6ec-4338-b1a7-f1496f605359
++  MODULE_TYPE                    = UEFI_DRIVER
++  VERSION_STRING                 = 1.0
++
++  LIBRARY_CLASS                  = XenHypercallLib|DXE_DRIVER DXE_RUNTIME_DRIVER DXE_SAL_DRIVER UEFI_DRIVER
++
++#
++# The following information is for reference only and not required by the build tools.
++#
++#  VALID_ARCHITECTURES           = IA32 X64 IPF EBC
++#
++
++[Sources]
++  GasketHypercall.h
++  XenHypercallLib.h
++  XenHypercallLib.c
++  Hypercall.c
++
++[Sources.X64]
++  X64/GasketHypercall.S   # convert between Emu x86_64 ABI and EFI X64 ABI
++
++[Sources.IA32]
++  Ia32/GasketHypercall.S  #
++
++
++[Packages]
++  MdePkg/MdePkg.dec
++  OvmfPkg/OvmfPkg.dec
++
++[LibraryClasses]
++  DebugLib
++  HobLib
++
++[Guids]
++  gEfiXenInfoGuid                      # PROTOCOL ALWAYS_CONSUMED
++
++[Depex]
++  TRUE
+Index: OvmfPkg/Library/XenHypercallLib/X64/GasketHypercall.S
+===================================================================
+--- OvmfPkg/Library/XenHypercallLib/X64/GasketHypercall.S	(revision 0)
++++ OvmfPkg/Library/XenHypercallLib/X64/GasketHypercall.S	(revision 0)
 @@ -0,0 +1,93 @@
 +#------------------------------------------------------------------------------
 +#
@@ -2978,81 +4088,11 @@ Index: OvmfPkg/ParaVirtualizationDxe/X64/GasketHypercall.S
 +  ret                     // return value is in %rax
 +
 +
-Index: OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.inf
+Index: OvmfPkg/Library/XenHypercallLib/Hypercall.c
 ===================================================================
---- OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.inf	(revision 0)
-+++ OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.inf	(revision 0)
-@@ -0,0 +1,65 @@
-+## @file
-+#  Component description file for Xen ParaVirtualization driver module.
-+#
-+#  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
-+#
-+#  This program and the accompanying materials
-+#  are licensed and made available under the terms and conditions of the BSD License
-+#  which accompanies this distribution. The full text of the license may be found at
-+#  http://opensource.org/licenses/bsd-license.php
-+#  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
-+#  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
-+#
-+#
-+##
-+
-+[Defines]
-+  INF_VERSION                    = 0x00010005
-+  BASE_NAME                      = ParaVirtualizationDxe
-+  FILE_GUID                      = 0a5baf88-b6ec-4338-b1a7-f1496f605359
-+  MODULE_TYPE                    = DXE_DRIVER
-+  VERSION_STRING                 = 1.0
-+
-+  ENTRY_POINT                    = XenPvDriverEntryPoint
-+
-+#
-+# The following information is for reference only and not required by the build tools.
-+#
-+#  VALID_ARCHITECTURES           = IA32 X64 IPF EBC
-+#
-+
-+[Sources]
-+  GasketHypercall.h
-+  ParaVirtualizationDxe.h
-+  ParaVirtualizationDxe.c
-+  Hypercall.c
-+
-+[Sources.X64]
-+  X64/GasketHypercall.S   # convert between Emu x86_64 ABI and EFI X64 ABI
-+
-+[Sources.IA32]
-+  Ia32/GasketHypercall.S  #
-+
-+
-+[Packages]
-+  MdePkg/MdePkg.dec
-+  OvmfPkg/OvmfPkg.dec
-+
-+[LibraryClasses]
-+  UefiDriverEntryPoint
-+  UefiBootServicesTableLib
-+  DebugLib
-+  HobLib
-+
-+  BaseLib
-+
-+[Protocols]
-+  gEfiXenHvProtocolGuid                ## PRODUCED
-+
-+[Guids]
-+  gEfiXenInfoGuid                      # PROTOCOL ALWAYS_CONSUMED
-+
-+[FixedPcd]
-+
-+[Depex]
-+  TRUE
-Index: OvmfPkg/ParaVirtualizationDxe/Hypercall.c
-===================================================================
---- OvmfPkg/ParaVirtualizationDxe/Hypercall.c	(revision 0)
-+++ OvmfPkg/ParaVirtualizationDxe/Hypercall.c	(revision 0)
-@@ -0,0 +1,112 @@
+--- OvmfPkg/Library/XenHypercallLib/Hypercall.c	(revision 0)
++++ OvmfPkg/Library/XenHypercallLib/Hypercall.c	(revision 0)
+@@ -0,0 +1,140 @@
 +/**@file
 +  This file holds all the needed Xen Hypercalls.
 +
@@ -3068,7 +4108,7 @@ Index: OvmfPkg/ParaVirtualizationDxe/Hypercall.c
 +
 +**/
 +
-+#include "ParaVirtualizationDxe.h"
++#include "XenHypercallLib.h"
 +
 +/**
 +  This method passes the hypercall parameters and hypercall number to UNIX ABI function, as well as the address of hypercall page.
@@ -3090,13 +4130,13 @@ Index: OvmfPkg/ParaVirtualizationDxe/Hypercall.c
 +{
 +  VOID *HypercallPages;
 +
-+  HypercallPages = GetHypercallPage ();
++  HypercallPages = InitializeHypercallPage ();
 +  if (HypercallPages == NULL) {
 +    return 0;
 +  }
 +
 +  //
-+  // All the hypercall just call one function.
++  // All the hypercalls call this function.
 +  //
 +  return Hypercall (HypercallPages, HypercallNum * 32, Arg1, Arg2, Arg3, Arg4, Arg5);
 +}
@@ -3108,16 +4148,36 @@ Index: OvmfPkg/ParaVirtualizationDxe/Hypercall.c
 +  @param  Arg       Parameter.
 +
 +**/
++
++/**
++  Hypercall #12: HYPERVISOR_MEMORY_OP
++**/
++EFI_STATUS
++EFIAPI
++HypervisorMemoryOp (
++  IN UINTN      Cmd,
++  IN VOID       *Arg
++  )
++{
++  return Hypercall2Abi (HYPERVISOR_MEMORY_OP, (UINTN) Cmd, (UINTN) Arg, 0, 0, 0);
++}
++
++/**
++  Hypercall #17: HYPERVISOR_XEN_VERSION
++**/
 +EFI_STATUS
 +EFIAPI
 +HypervisorXenVersion (
-+  IN UINTN Cmd,
-+  IN VOID  *Arg
++  IN UINTN      Cmd,
++  IN VOID       *Arg
 +  )
 +{
 +  return Hypercall2Abi (HYPERVISOR_XEN_VERSION, (UINTN) Cmd, (UINTN) Arg, 0, 0, 0);
 +}
 +
++/**
++  Hypercall #20: HYPERVISOR_GRANT_TABLE_OP
++**/
 +EFI_STATUS
 +EFIAPI
 +HypervisorGrantTableOp(
@@ -3129,6 +4189,9 @@ Index: OvmfPkg/ParaVirtualizationDxe/Hypercall.c
 +  return Hypercall2Abi (HYPERVISOR_GRANT_TABLE_OP, (UINTN) Cmd, (UINTN) Uop, Count, 0, 0);
 +}
 +
++/**
++  Hypercall #29: HYPERVISOR_SCHED_OP
++**/
 +EFI_STATUS
 +EFIAPI
 +HypervisorSchedOp (
@@ -3139,36 +4202,89 @@ Index: OvmfPkg/ParaVirtualizationDxe/Hypercall.c
 +  return Hypercall2Abi(HYPERVISOR_SCHED_OP, (UINTN) Cmd, (UINTN) Arg, 0, 0, 0);
 +}
 +
++/**
++  Hypercall #32: HYPERVISOR_EVENT_CHANNEL_OP
++**/
 +EFI_STATUS
 +EFIAPI
 +HypervisorEventChannelOp (
-+  IN UINTN Cmd,
-+  IN VOID  *Arg
++  IN UINTN      Cmd,
++  IN VOID       *Arg
 +  )
 +{
 +  return Hypercall2Abi(HYPERVISOR_EVENT_CHANNEL_OP, (UINTN) Cmd, (UINTN) Arg, 0, 0, 0);
 +}
 +
++/**
++  Hypercall #34: HYPERVISOR_HVM_OP
++**/
 +EFI_STATUS
 +EFIAPI
 +HypervisorHvmOp (
-+  IN UINTN Cmd,
-+  IN VOID  *Arg
++  IN UINTN      Cmd,
++  IN VOID       *Arg
 +  )
 +{
 +  return Hypercall2Abi (HYPERVISOR_HVM_OP, (UINTN) Cmd, (UINTN) Arg, 0, 0, 0);
 +}
-+
 +
 +/*
 +  Add more hypercall here
 +
 +**/
 +
-Index: OvmfPkg/ParaVirtualizationDxe/GasketHypercall.h
+Index: OvmfPkg/Library/XenHypercallLib/XenHypercallLib.c
 ===================================================================
---- OvmfPkg/ParaVirtualizationDxe/GasketHypercall.h	(revision 0)
-+++ OvmfPkg/ParaVirtualizationDxe/GasketHypercall.h	(revision 0)
+--- OvmfPkg/Library/XenHypercallLib/XenHypercallLib.c	(revision 0)
++++ OvmfPkg/Library/XenHypercallLib/XenHypercallLib.c	(revision 0)
+@@ -0,0 +1,43 @@
++/** @file
++Prepare to use Xen Hypercall.
++
++Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
++
++This program and the accompanying materials
++are licensed and made available under the terms and conditions of the BSD License
++which accompanies this distribution.  The full text of the license may be found at
++http://opensource.org/licenses/bsd-license.php
++
++THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#include "XenHypercallLib.h"
++
++/**
++  Initialize the hypercalls: Get Xen Hypercall page from HOB.
++  
++  @param[out]   A pointer to hypercall page.
++
++**/
++VOID *
++InitializeHypercallPage (
++  VOID
++  )
++{
++  EFI_PEI_HOB_POINTERS  GuidHob;
++  EFI_XEN_INFO          *mXenInfo;
++ 
++  GuidHob.Raw = GetFirstGuidHob (&gEfiXenInfoGuid);
++  if (GuidHob.Raw != NULL) {
++    mXenInfo = GET_GUID_HOB_DATA (GuidHob.Guid);
++    if (mXenInfo != NULL) {
++      return (VOID *) (UINTN) mXenInfo->HyperPages;
++    }
++  } 
++
++  DEBUG ((EFI_D_ERROR, "Gasket_Fail to get Xen info from hob\n"));
++  return NULL;
++}
++
+Index: OvmfPkg/Library/XenHypercallLib/GasketHypercall.h
+===================================================================
+--- OvmfPkg/Library/XenHypercallLib/GasketHypercall.h	(revision 0)
++++ OvmfPkg/Library/XenHypercallLib/GasketHypercall.h	(revision 0)
 @@ -0,0 +1,44 @@
 +/** @file
 +
@@ -3214,12 +4330,13 @@ Index: OvmfPkg/ParaVirtualizationDxe/GasketHypercall.h
 +
 +#endif
 +
-Index: OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.c
+Index: OvmfPkg/Library/XenHypercallLib/XenHypercallLib.h
 ===================================================================
---- OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.c	(revision 0)
-+++ OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.c	(revision 0)
-@@ -0,0 +1,224 @@
+--- OvmfPkg/Library/XenHypercallLib/XenHypercallLib.h	(revision 0)
++++ OvmfPkg/Library/XenHypercallLib/XenHypercallLib.h	(revision 0)
+@@ -0,0 +1,30 @@
 +/** @file
++Provide Xen Hypercall.
 +
 +Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
 +
@@ -3233,220 +4350,25 @@ Index: OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.c
 +
 +**/
 +
-+#include "ParaVirtualizationDxe.h"
++#ifndef _XEN_HYPERCALL_LIB_H_
++#define _XEN_HYPERCALL_LIB_H_
 +
-+//
-+// Module Global:
-+//
-+EFI_HANDLE   mXenHypercallHandle = NULL;
-+EFI_XEN_HV_PROTOCOL  mXenHypercallProtocol;
++#include <PiDxe.h>
 +
++#include <Library/HobLib.h>
++#include <Library/DebugLib.h>
++#include <Guid/XenInfo.h>
 +
-+/**
++#include <Library/XenHypercallLib.h>
++#include <Library/XenLib.h>
++#include "GasketHypercall.h"
 +
-+  Get Xen Hypercall page from HOB.
++#endif
 +
-+**/
-+VOID*
-+GetHypercallPage (
-+  VOID
-+  )
-+{
-+  EFI_PEI_HOB_POINTERS  GuidHob;
-+  EFI_XEN_INFO          *mXenInfo;
-+ 
-+  GuidHob.Raw = GetFirstGuidHob (&gEfiXenInfoGuid);
-+  if (GuidHob.Raw != NULL) {
-+    mXenInfo = GET_GUID_HOB_DATA (GuidHob.Guid);
-+    if (mXenInfo != NULL) {
-+      return (VOID *) (UINTN) mXenInfo->HyperPages;
-+    }
-+  } 
-+
-+  DEBUG ((EFI_D_ERROR, "Gasket_Fail to get Xen info from hob\n"));
-+  return NULL;
-+}
-+
-+
-+/**
-+  Print String (For Hypercall test)
-+**/
-+INTN
-+EFIAPI
-+PrintAsciiStr (
-+  IN      CONST CHAR8               *FirstString,
-+  IN      UINTN                     Length
-+  )
-+{
-+  ASSERT (AsciiStrSize (FirstString));
-+
-+  while ((*FirstString != '\0') && (Length > 0)) {
-+    DEBUG ((EFI_D_INFO, "%c", *FirstString));
-+    FirstString++;
-+    Length--;
-+  }
-+
-+  DEBUG ((EFI_D_INFO, "\n"));
-+  return EFI_SUCCESS;
-+}
-+
-+/**
-+
-+  Test of calling hypercall in OVMF
-+
-+**/
-+VOID
-+TestHypercall (
-+  VOID
-+  )
-+{
-+  UINT32           Major, Minor;
-+  XenExtraversion  ExtraVersion;
-+
-+  //hypercall simple test
-+  Major = 0; Minor = 0;
-+  Minor = mXenHypercallProtocol.HypervisorXenVersion(XENVER_VERSION, 0);
-+  Major = Minor >> 16;
-+  Minor &= 0xFFFF;
-+  DEBUG ((EFI_D_INFO, "[TestInfo_CallHypercallInsideXenPvDXE]OVMF is running on Xen version: %d.%d\n", Major, Minor));
-+
-+  //test2
-+  mXenHypercallProtocol.HypervisorXenVersion(XENVER_EXTRAVERSION, ExtraVersion);
-+  DEBUG ((EFI_D_INFO, "[TestInfo_CallHypercallInsideXenPvDXE]Detected Xen "));
-+  PrintAsciiStr(ExtraVersion, 16);
-+}
-+
-+/**
-+
-+  Initialize the methods of EFI_XEN_HV_PROTOCOL;
-+
-+  @param  XenProtocolInstance   Points to the EFI_XEN_HV_PROTOCOL instance.  
-+
-+**/
-+EFI_STATUS
-+EFIAPI
-+ProtocolInitialize (
-+  IN OUT EFI_XEN_HV_PROTOCOL     *XenProtocolInstance
-+  )
-+{
-+  //
-+  // Check for invalid input parameters
-+  //
-+  ASSERT (XenProtocolInstance);
-+
-+  //
-+  // Initialize the protocol methods
-+  //
-+  XenProtocolInstance->HypervisorSetTrapTable     = NULL;
-+  XenProtocolInstance->HypervisorMmuUpdate        = NULL;
-+  XenProtocolInstance->HypervisorSetGdt           = NULL;
-+  XenProtocolInstance->HypervisorStackSwitch      = NULL;
-+  XenProtocolInstance->HypervisorSetCallbacks     = NULL;
-+  XenProtocolInstance->HypervisorFpuTaskswitch    = NULL;
-+  XenProtocolInstance->HypervisorSchedOpCompat    = NULL;
-+  XenProtocolInstance->HypervisorPlatformOp       = NULL;
-+  XenProtocolInstance->HypervisorSetDebugreg      = NULL;
-+  XenProtocolInstance->HypervisorGetDebugreg      = NULL;
-+  XenProtocolInstance->HypervisorUpdateDescriptor = NULL;
-+  XenProtocolInstance->HypervisorMemoryOp         = NULL;
-+  XenProtocolInstance->HypervisorMulticall        = NULL;
-+  XenProtocolInstance->HypervisorUpdateVaMapping  = NULL;
-+  XenProtocolInstance->HypervisorSetTimerOp       = NULL;
-+  XenProtocolInstance->HypervisorEventChannelOpCompat = NULL;
-+  XenProtocolInstance->HypervisorXenVersion       = HypervisorXenVersion;
-+  XenProtocolInstance->HypervisorConsoleIo        = NULL;
-+  XenProtocolInstance->HypervisorPhysdevOpCompat  = NULL;
-+  XenProtocolInstance->HypervisorGrantTableOp     = HypervisorGrantTableOp;
-+  XenProtocolInstance->HypervisorVmAssist         = NULL;
-+  XenProtocolInstance->HypervisorUpdateVaMappingOtherdomain = NULL;
-+  XenProtocolInstance->HypervisorIret             = NULL;
-+  XenProtocolInstance->HypervisorVcpuOp           = NULL;
-+  XenProtocolInstance->HypervisorSetSegmentBase   = NULL;
-+  XenProtocolInstance->HypervisorMmuextOp         = NULL;
-+  XenProtocolInstance->HypervisorXsmOp            = NULL;
-+  XenProtocolInstance->HypervisorNmiOp            = NULL;
-+  XenProtocolInstance->HypervisorSchedOp          = HypervisorSchedOp;
-+  XenProtocolInstance->HypervisorCallbackOp       = NULL;
-+  XenProtocolInstance->HypervisorXenoprofOp       = NULL;
-+  XenProtocolInstance->HypervisorEventChannelOp   = HypervisorEventChannelOp;
-+  XenProtocolInstance->HypervisorPhysdevOp        = NULL;
-+  XenProtocolInstance->HypervisorHvmOp            = HypervisorHvmOp;
-+  XenProtocolInstance->HypervisorSysctl           = NULL;
-+  XenProtocolInstance->HypervisorDomctl           = NULL;
-+  XenProtocolInstance->HypervisorKexecOp          = NULL;
-+  XenProtocolInstance->HypervisorTmemOp           = NULL;
-+
-+  XenProtocolInstance->HypervisorArch0            = NULL;
-+  XenProtocolInstance->HypervisorArch1            = NULL;
-+  XenProtocolInstance->HypervisorArch2            = NULL;
-+  XenProtocolInstance->HypervisorArch3            = NULL;
-+  XenProtocolInstance->HypervisorArch4            = NULL;
-+  XenProtocolInstance->HypervisorArch5            = NULL;
-+  XenProtocolInstance->HypervisorArch6            = NULL;
-+  XenProtocolInstance->HypervisorArch7            = NULL;
-+  
-+  //
-+  // Initialize other info in protocol
-+  // TODO: Set the version info 
-+  //
-+  XenProtocolInstance->MajorVersion  = 0;
-+  XenProtocolInstance->MinorVersion  = 0;
-+
-+  return EFI_SUCCESS;
-+}
-+
-+/**
-+
-+  Driver to produce EFI_XEN_HV_PROTOCOL protocol. 
-+
-+  @param ImageHandle     Module's image handle
-+  @param SystemTable     Pointer of EFI_SYSTEM_TABLE
-+
-+  @retval EFI_SUCCESS    Smbios protocol installed
-+  @retval Other          No protocol installed, unload driver.
-+
-+**/
-+EFI_STATUS
-+EFIAPI
-+XenPvDriverEntryPoint (
-+  IN EFI_HANDLE           ImageHandle,
-+  IN EFI_SYSTEM_TABLE     *SystemTable
-+  )
-+{
-+  EFI_STATUS            Status;
-+
-+  //
-+  // Make sure the Xen ParaVirtualization Protocol has not been installed in the system yet.
-+  //
-+  ASSERT_PROTOCOL_ALREADY_INSTALLED (NULL, &gEfiXenHvProtocolGuid);
-+
-+  //
-+  // Initialize protocol
-+  //
-+  ProtocolInitialize(&mXenHypercallProtocol);
-+
-+  //
-+  // Test inside Xen PV driver Dxe
-+  //
-+  TestHypercall();
-+
-+  //
-+  // Make a new handle and install the protocol
-+  //
-+  Status = gBS->InstallMultipleProtocolInterfaces (
-+                  &mXenHypercallHandle,
-+                  &gEfiXenHvProtocolGuid, &mXenHypercallProtocol,
-+                  NULL
-+                  );
-+  ASSERT_EFI_ERROR (Status);
-+
-+  return Status;
-+}
-+
-Index: OvmfPkg/ParaVirtualizationDxe/Ia32/GasketHypercall.S
+Index: OvmfPkg/Library/XenHypercallLib/Ia32/GasketHypercall.S
 ===================================================================
---- OvmfPkg/ParaVirtualizationDxe/Ia32/GasketHypercall.S	(revision 0)
-+++ OvmfPkg/ParaVirtualizationDxe/Ia32/GasketHypercall.S	(revision 0)
+--- OvmfPkg/Library/XenHypercallLib/Ia32/GasketHypercall.S	(revision 0)
++++ OvmfPkg/Library/XenHypercallLib/Ia32/GasketHypercall.S	(revision 0)
 @@ -0,0 +1,96 @@
 +#------------------------------------------------------------------------------
 +#
@@ -3544,885 +4466,31 @@ Index: OvmfPkg/ParaVirtualizationDxe/Ia32/GasketHypercall.S
 +  popl %ebp
 +  ret
 +
-Index: OvmfPkg/OvmfPkgIa32.dsc
-===================================================================
---- OvmfPkg/OvmfPkgIa32.dsc	(revision 12068)
-+++ OvmfPkg/OvmfPkgIa32.dsc	(working copy)
-@@ -300,9 +300,15 @@
-   }
- 
-   MdeModulePkg/Core/RuntimeDxe/RuntimeDxe.inf
-+  #
-+  # Xen PV Dxe and Test
-+  #
-+  OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.inf
-+  OvmfPkg/HypercallTestDxe/HypercallTestDxe.inf
-   MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
-   MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
-   MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
-+  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
-   PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
-   UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
-   UefiCpuPkg/CpuDxe/CpuDxe.inf
-@@ -370,7 +376,7 @@
-   # ACPI Support
-   #
-   MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
--  MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
-+  OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf
-   OvmfPkg/AcpiTables/AcpiTables.inf
- 
-   #
-Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.c
-===================================================================
---- OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.c	(revision 0)
-+++ OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.c	(revision 0)
-@@ -0,0 +1,508 @@
-+/** @file
-+  Publish Xen hvmloader SMBIOS inside OVMF. This code parses Xen SMBIOS tables and add them into UEFI SMBIOS by calling SMBIOS protocol.
-+
-+  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
-+
-+  This program and the accompanying materials                          
-+  are licensed and made available under the terms and conditions of the BSD License         
-+  which accompanies this distribution.  The full text of the license may be found at        
-+  http://opensource.org/licenses/bsd-license.php                                            
-+                                                                                          
-+  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,                     
-+  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.             
-+
-+**/
-+
-+#include "SmbiosPlatformDxe.h"
-+
-+//
-+// SMBIOS entry point structure
-+//
-+SMBIOS_TABLE_ENTRY_POINT    *EntryPointStructure    = NULL;
-+EFI_SMBIOS_PROTOCOL         *gSmbios;
-+
-+/**
-+  Type 0 -- BIOS Information
-+
-+  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
-+
-+**/
-+VOID
-+InstallSmbiosType0 (
-+  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
-+  )
-+{
-+  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
-+
-+  //
-+  // BIOS info (TYPE 0)
-+  //
-+  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 0, 0);
-+  if (SmbiosTable.Raw == NULL) {
-+    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 0 (BIOS Info) not found!\n"));
-+    return ;
-+  }
-+
-+  //
-+  // Log Smbios Record Type0
-+  //
-+  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type0);
-+
-+  return;
-+}
-+
-+/**
-+  Type 1 -- System Information
-+
-+  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
-+
-+**/
-+VOID
-+InstallSmbiosType1 (
-+  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
-+  )
-+{
-+  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
-+
-+  //
-+  // System info (TYPE 1)
-+  // 
-+  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 1, 0);
-+  if (SmbiosTable.Raw == NULL) {
-+    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 1 (System Info) not found!\n"));
-+    return ;
-+  }
-+
-+  //
-+  // Log Smbios Record Type1
-+  //
-+  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type1);
-+
-+  return;
-+}
-+
-+/**
-+  Type 3 -- System Enclosure or Chassis
-+
-+  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
-+
-+**/
-+VOID
-+InstallSmbiosType3 (
-+  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
-+  )
-+{
-+  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
-+
-+  //
-+  // Enclosure or Chassis info (TYPE 3)
-+  // 
-+  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 3, 0);
-+  if (SmbiosTable.Raw == NULL) {
-+    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 3 (Enclosure or Chassis Info) not found!\n"));
-+    return ;
-+  }
-+
-+  //
-+  // Log Smbios Record Type3
-+  //
-+  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type3);
-+
-+  return;
-+}
-+
-+/**
-+  Type 4 -- Processor Information
-+
-+  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
-+
-+**/
-+VOID
-+InstallSmbiosType4 (
-+  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
-+  )
-+{
-+  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
-+
-+  //
-+  // Processor info (TYPE 4)
-+  // 
-+  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 4, 0);
-+  if (SmbiosTable.Raw == NULL) {
-+    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 4 (Processor Info) not found!\n"));
-+    return ;
-+  }
-+
-+  //
-+  // Log Smbios Record Type4
-+  //
-+  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type4);
-+
-+  return ;
-+}
-+
-+/**
-+  Type 11 -- OEM Strings
-+
-+  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
-+
-+**/
-+VOID
-+InstallSmbiosType11 (
-+  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
-+  )
-+{
-+  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
-+
-+  //
-+  // OEM info (TYPE 11)
-+  // 
-+  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 11, 0);
-+  if (SmbiosTable.Raw == NULL) {
-+    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 11 (OEM Info) not found!\n"));
-+    return ;
-+  }
-+
-+  //
-+  // Log Smbios Record Type11
-+  //
-+  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type11);
-+
-+  return ;
-+}
-+
-+/**
-+  Type 16 -- Physical Memory Array
-+
-+  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
-+
-+**/
-+VOID
-+InstallSmbiosType16 (
-+  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
-+  )
-+{
-+  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
-+
-+  //
-+  // Physical Memory Array info (TYPE 16)
-+  // 
-+  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 16, 0);
-+  if (SmbiosTable.Raw == NULL) {
-+    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 16 (Physical Memory Array info) not found!\n"));
-+    return ;
-+  }
-+
-+  //
-+  // Log Smbios Record Type16
-+  //
-+  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type16);
-+
-+  return ;
-+}
-+
-+/**
-+  Type 17 -- Memory Device
-+
-+  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
-+
-+**/
-+VOID
-+InstallSmbiosType17 (
-+  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
-+  )
-+{
-+  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
-+
-+  //
-+  // Memory Device info (TYPE 17)
-+  // 
-+  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 17, 0);
-+  if (SmbiosTable.Raw == NULL) {
-+    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 17 (Memory Device Info) not found!\n"));
-+    return ;
-+  }
-+
-+  //
-+  // Log Smbios Record Type17
-+  //
-+  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type17);
-+
-+  return ;
-+}
-+
-+/**
-+  Type 19 -- Memory Array Mapped Address
-+
-+  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
-+
-+**/
-+VOID
-+InstallSmbiosType19 (
-+  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
-+  )
-+{
-+  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
-+
-+  //
-+  // Memory Array Mapped Address info (TYPE 19)
-+  // 
-+  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 19, 0);
-+  if (SmbiosTable.Raw == NULL) {
-+    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 19 (Memory Array Mapped Address Info) not found!\n"));
-+    return ;
-+  }
-+
-+  //
-+  // Log Smbios Record Type19
-+  //
-+  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type19);
-+
-+  return ;
-+}
-+
-+/**
-+  Type 20 -- Memory Device Mapped Address
-+
-+  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
-+
-+**/
-+VOID
-+InstallSmbiosType20 (
-+  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
-+  )
-+{
-+  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
-+
-+  //
-+  // Memory Device Mapped Address info (TYPE 20)
-+  // 
-+  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 20, 0);
-+  if (SmbiosTable.Raw == NULL) {
-+    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 20 (Memory Device Mapped Address Info) not found!\n"));
-+    return ;
-+  }
-+
-+  //
-+  // Log Smbios Record Type20
-+  //
-+  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type20);
-+
-+  return ;
-+}
-+
-+/**
-+  Type 32 -- System Boot Information
-+
-+  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
-+
-+**/
-+VOID
-+InstallSmbiosType32 (
-+  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
-+  )
-+{
-+  SMBIOS_STRUCTURE_POINTER          SmbiosTable;
-+
-+  //
-+  // System Boot info (TYPE 32)
-+  // 
-+  SmbiosTable = GetSmbiosTableFromType (SmbiosEntry, 32, 0);
-+  if (SmbiosTable.Raw == NULL) {
-+    DEBUG ((EFI_D_ERROR, "SmbiosTable: Type 32 (System Boot Info) not found!\n"));
-+    return ;
-+  }
-+
-+  //
-+  // Log Smbios Record Type32
-+  //
-+  LogSmbiosData(gSmbios,(UINT8*)SmbiosTable.Type32);
-+
-+  return ;
-+}
-+
-+/**
-+  Get SMBIOS record length.
-+
-+  @param  SmbiosTable   SMBIOS pointer.
-+
-+**/
-+UINTN
-+SmbiosTableLength (
-+  IN SMBIOS_STRUCTURE_POINTER SmbiosTable
-+  )
-+{
-+  CHAR8  *AChar;
-+  UINTN  Length;
-+
-+  AChar = (CHAR8 *)(SmbiosTable.Raw + SmbiosTable.Hdr->Length);
-+
-+  //
-+  // Each structure shall be terminated by a double-null (SMBIOS spec.7.1)
-+  //
-+  while ((*AChar != 0) || (*(AChar + 1) != 0)) {
-+    AChar ++;
-+  }
-+  Length = ((UINTN)AChar - (UINTN)SmbiosTable.Raw + 2);
-+  
-+  return Length;
-+}
-+
-+/**
-+  Get SMBIOS record by type.
-+
-+  @param  Smbios       SMBIOS entry point structure pointer.
-+  @param  Type         Type of SMBIOS record.
-+  @param  Index        Index.
-+
-+**/
-+SMBIOS_STRUCTURE_POINTER
-+GetSmbiosTableFromType (
-+  IN SMBIOS_TABLE_ENTRY_POINT  *Smbios,
-+  IN UINT8                     Type,
-+  IN UINTN                     Index
-+  )
-+{
-+  SMBIOS_STRUCTURE_POINTER SmbiosTable;
-+  UINTN                    SmbiosTypeIndex;
-+  
-+  SmbiosTypeIndex = 0;
-+  SmbiosTable.Raw = (UINT8 *)(UINTN)Smbios->TableAddress;
-+  if (SmbiosTable.Raw == NULL) {
-+    return SmbiosTable;
-+  }
-+  while ((SmbiosTypeIndex != Index) || (SmbiosTable.Hdr->Type != Type)) {
-+    if (SmbiosTable.Hdr->Type == 127) {
-+      SmbiosTable.Raw = NULL;
-+      return SmbiosTable;
-+    }
-+    if (SmbiosTable.Hdr->Type == Type) {
-+      SmbiosTypeIndex ++;
-+    }
-+
-+    //
-+    // Get the structure address
-+    //
-+    SmbiosTable.Raw = (UINT8 *)(SmbiosTable.Raw + SmbiosTableLength (SmbiosTable));
-+  }
-+
-+  return SmbiosTable;
-+}
-+
-+/**
-+  Get SMBIOS String.
-+
-+  @param  SmbiosTable   SMBIOS pointer.
-+  @param  String        SMBIOS string.
-+
-+**/
-+CHAR8 *
-+GetSmbiosString (
-+  IN SMBIOS_STRUCTURE_POINTER  SmbiosTable,
-+  IN SMBIOS_TABLE_STRING       String
-+  )
-+{
-+  CHAR8      *AString;
-+  UINT8      Index;
-+
-+  Index = 1;
-+  AString = (CHAR8 *)(SmbiosTable.Raw + SmbiosTable.Hdr->Length);
-+  while (Index != String) {
-+    while (*AString != 0) {
-+      AString ++;
-+    }
-+    AString ++;
-+    if (*AString == 0) {
-+      return AString;
-+    }
-+    Index ++;
-+  }
-+
-+  return AString;
-+}
-+
-+/**
-+  Log SMBIOS record.
-+
-+  @param  Smbios   Pointer to SMBIOS protocol instance.
-+  @param  Buffer   Pointer to the data buffer.
-+
-+**/
-+VOID
-+LogSmbiosData (
-+  IN   EFI_SMBIOS_PROTOCOL        *Smbios,
-+  IN   UINT8                      *Buffer
-+  )
-+{
-+  EFI_STATUS         Status;
-+  EFI_SMBIOS_HANDLE  SmbiosHandle;
-+  
-+  SmbiosHandle = 0;
-+  Status = Smbios->Add (
-+                     Smbios,
-+                     NULL,
-+                     &SmbiosHandle,
-+                     (EFI_SMBIOS_TABLE_HEADER*)Buffer
-+                     );
-+  ASSERT_EFI_ERROR (Status);
-+}
-+
-+/**
-+  Installs the Xen hvmloader Smbios Table to the System Table.
-+
-+  @param ImageHandle     Module's image handle
-+  @param SystemTable     Pointer of EFI_SYSTEM_TABLE
-+
-+  @retval EFI_SUCCESS    Smbios protocol installed
-+  @retval Other          No protocol installed, unload driver.
-+
-+**/
-+EFI_STATUS
-+EFIAPI
-+SmbiosTablePublishEntry (
-+  IN EFI_HANDLE           ImageHandle,
-+  IN EFI_SYSTEM_TABLE     *SystemTable
-+  )
-+{
-+  EFI_STATUS                Status;
-+  EFI_HOB_GUID_TYPE         *GuidHob;
-+
-+  //
-+  // See if a XenInfo HOB is available
-+  //
-+  GuidHob = GetFirstGuidHob (&gEfiXenInfoGuid);
-+  if (GuidHob != NULL) {
-+    //
-+    // We are running inside Xen HVM. Then, find the Xen SMBIOS.
-+    //
-+    EntryPointStructure = XenSmbiosDetect();
-+    if (EntryPointStructure == NULL) {
-+      return EFI_NOT_FOUND;
-+    }
-+
-+    //
-+    // Find the SMBIOS protocol 
-+    //
-+    Status = gBS->LocateProtocol (
-+                    &gEfiSmbiosProtocolGuid,
-+                    NULL,
-+                    (VOID**)&gSmbios
-+                    );
-+    if (EFI_ERROR (Status)) {
-+      return Status;
-+    }
-+
-+    InstallSmbiosType0 (EntryPointStructure);
-+    InstallSmbiosType1 (EntryPointStructure);
-+    InstallSmbiosType3 (EntryPointStructure);
-+    InstallSmbiosType4 (EntryPointStructure);
-+    InstallSmbiosType11 (EntryPointStructure);
-+    InstallSmbiosType16 (EntryPointStructure);
-+    InstallSmbiosType17 (EntryPointStructure);
-+    InstallSmbiosType19 (EntryPointStructure);
-+    InstallSmbiosType20 (EntryPointStructure);
-+    InstallSmbiosType32 (EntryPointStructure);
-+  }
-+
-+  return EFI_SUCCESS;
-+}
-Index: OvmfPkg/SmbiosPlatformDxe/XenSmbiosSupport.c
-===================================================================
---- OvmfPkg/SmbiosPlatformDxe/XenSmbiosSupport.c	(revision 0)
-+++ OvmfPkg/SmbiosPlatformDxe/XenSmbiosSupport.c	(revision 0)
-@@ -0,0 +1,60 @@
-+/** @file
-+  Detect Xen hvmloader SMBIOS inside OVMF.
-+
-+  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
-+
-+  This program and the accompanying materials                          
-+  are licensed and made available under the terms and conditions of the BSD License         
-+  which accompanies this distribution.  The full text of the license may be found at        
-+  http://opensource.org/licenses/bsd-license.php                                            
-+                                                                                          
-+  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,                     
-+  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.             
-+
-+**/
-+
-+#include "SmbiosPlatformDxe.h"
-+
-+/**
-+  Figures out if Xen hvmloader provides SMBIOS for HVM.
-+
-+  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
-+
-+**/
-+SMBIOS_TABLE_ENTRY_POINT *
-+XenSmbiosDetect (
-+  VOID
-+  )
-+{
-+  UINTN                     XenSmbiosPtr;
-+  SMBIOS_TABLE_ENTRY_POINT  *XenSmbiosEntryPointStructure;
-+  UINTN                     Index;
-+  UINT8                     Length;
-+  UINT8                     Checksum;
-+  CHAR8                     *SmbiosBit;
-+
-+  for (XenSmbiosPtr = XEN_SMBIOS_PHYSICAL_ADDRESS; XenSmbiosPtr < XEN_SMBIOS_PHYSICAL_END; XenSmbiosPtr += 0x10) {
-+
-+    XenSmbiosEntryPointStructure = (SMBIOS_TABLE_ENTRY_POINT *) (UINTN) XenSmbiosPtr;
-+
-+    if (!AsciiStrnCmp ((CHAR8 *) XenSmbiosEntryPointStructure->AnchorString, "_SM_", 4) && !AsciiStrnCmp ((CHAR8 *) XenSmbiosEntryPointStructure->IntermediateAnchorString, "_DMI_", 5)) {
-+      //
-+      // Check the structure's checksum
-+      //
-+      SmbiosBit = (CHAR8 *) XenSmbiosPtr;
-+      Length = XenSmbiosEntryPointStructure->EntryPointLength;
-+      Checksum = 0;
-+
-+      for (Index = 0; Index < Length; Index++) {
-+        Checksum += SmbiosBit[Index];
-+      }
-+      if (Checksum != 0) {
-+        break;
-+      }
-+
-+      return XenSmbiosEntryPointStructure;
-+    }
-+  }
-+
-+  return NULL;
-+}
-Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.h
-===================================================================
---- OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.h	(revision 0)
-+++ OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.h	(revision 0)
-@@ -0,0 +1,159 @@
-+/** @file
-+  This code passthroughs Xen hvmloader SMBIOS inside OVMF.
-+
-+  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
-+
-+  This program and the accompanying materials                          
-+  are licensed and made available under the terms and conditions of the BSD License         
-+  which accompanies this distribution.  The full text of the license may be found at        
-+  http://opensource.org/licenses/bsd-license.php                                            
-+                                                                                          
-+  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,                     
-+  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.             
-+
-+**/
-+
-+#ifndef _SMBIOS_PLATFORM_DXE_H_
-+#define _SMBIOS_PLATFORM_DXE_H_
-+
-+#include <PiDxe.h>
-+
-+#include <Protocol/Smbios.h>
-+#include <IndustryStandard/SmBios.h>
-+#include <Guid/EventGroup.h>
-+#include <Guid/SmBios.h>
-+#include <Library/DebugLib.h>
-+#include <Library/UefiDriverEntryPoint.h>
-+#include <Library/UefiLib.h>
-+#include <Library/BaseLib.h>
-+#include <Library/BaseMemoryLib.h>
-+#include <Library/MemoryAllocationLib.h>
-+#include <Library/UefiBootServicesTableLib.h>
-+#include <Library/PcdLib.h>
-+#include <Library/HobLib.h>
-+
-+#define XEN_SMBIOS_PHYSICAL_ADDRESS       0x000EB000
-+#define XEN_SMBIOS_PHYSICAL_END           0x000F0000
-+
-+extern EFI_GUID gEfiXenInfoGuid;
-+
-+/**
-+  Figures out if Xen hvmloader provides SMBIOS for HVM.
-+
-+  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
-+
-+**/
-+SMBIOS_TABLE_ENTRY_POINT *
-+XenSmbiosDetect (
-+  VOID
-+  );
-+
-+/**
-+  Get SMBIOS record by type.
-+
-+  @param  Smbios       SMBIOS entry point structure pointer.
-+  @param  Type         Type of SMBIOS record.
-+  @param  Index        Index.
-+
-+**/
-+SMBIOS_STRUCTURE_POINTER
-+GetSmbiosTableFromType (
-+  IN SMBIOS_TABLE_ENTRY_POINT  *Smbios,
-+  IN UINT8                 Type,
-+  IN UINTN                 Index
-+  );
-+
-+/**
-+  Get SMBIOS String.
-+
-+  @param  SmbiosTable   SMBIOS pointer.
-+  @param  String        SMBIOS string.
-+
-+**/
-+CHAR8 *
-+GetSmbiosString (
-+  IN SMBIOS_STRUCTURE_POINTER  SmbiosTable,
-+  IN SMBIOS_TABLE_STRING       String
-+  );
-+
-+/**
-+  Logs SMBIOS record.
-+
-+  @param  Smbios   Pointer to SMBIOS protocol instance.
-+  @param  Buffer   Pointer to the data buffer.
-+
-+**/
-+VOID
-+LogSmbiosData (
-+  IN   EFI_SMBIOS_PROTOCOL        *Smbios,
-+  IN   UINT8                      *Buffer
-+  );
-+
-+/**
-+  Get the SMBIOS recorde from Xen SMBIOS entry point and install it.
-+
-+  Type 0    BIOS Information
-+  Type 1    System Information
-+  Type 3    System Enclosure or Chassis
-+  Type 4    Processor Information
-+  Type 11   OEM Strings
-+  Type 16   Physical Memory Array
-+  Type 17   Memory Device
-+  Type 19   Memory Array Mapped Address
-+  Type 20   Memory Device Mapped Address
-+  Type 32   System Boot Information
-+
-+  @return SMBIOS_TABLE_ENTRY_POINT   Address of Xen hvmloader SMBIOS.
-+
-+**/
-+VOID
-+InstallSmbiosType0 (
-+  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
-+  );
-+
-+VOID
-+InstallSmbiosType1 (
-+  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
-+  );
-+
-+VOID
-+InstallSmbiosType3 (
-+  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
-+  );
-+
-+VOID
-+InstallSmbiosType4 (
-+  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
-+  );
-+
-+VOID
-+InstallSmbiosType11 (
-+  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
-+  );
-+
-+VOID
-+InstallSmbiosType16 (
-+  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
-+  );
-+
-+VOID
-+InstallSmbiosType17 (
-+  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
-+  );
-+
-+VOID
-+InstallSmbiosType19 (
-+  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
-+  );
-+
-+VOID
-+InstallSmbiosType20 (
-+  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
-+  );
-+
-+VOID
-+InstallSmbiosType32 (
-+  IN SMBIOS_TABLE_ENTRY_POINT       *SmbiosEntry
-+  );
-+
-+#endif
-Index: OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
-===================================================================
---- OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf	(revision 0)
-+++ OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf	(revision 0)
-@@ -0,0 +1,65 @@
-+## @file
-+#  Component description file for Xen hvmloader Smbios module. 
-+#  This driver initializes and installs the Xen hvmloader SMBIOS protocol.
-+#
-+#  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
-+#
-+#  This program and the accompanying materials
-+#  are licensed and made available under the terms and conditions of the BSD License
-+#  which accompanies this distribution. The full text of the license may be found at
-+#  http://opensource.org/licenses/bsd-license.php
-+#  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
-+#  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
-+#
-+#
-+##
-+
-+[Defines]
-+  INF_VERSION                    = 0x00010005
-+  BASE_NAME                      = SmbiosPlatformDxe
-+  FILE_GUID                      = 4110465d-5ff3-4f4b-b580-24ed0d06747a
-+  MODULE_TYPE                    = DXE_DRIVER
-+  VERSION_STRING                 = 1.0
-+
-+  ENTRY_POINT                    = SmbiosTablePublishEntry
-+
-+#
-+# The following information is for reference only and not required by the build tools.
-+#
-+#  VALID_ARCHITECTURES           = IA32 X64 IPF EBC
-+#
-+
-+[Sources]
-+  SmbiosPlatformDxe.h
-+  SmbiosPlatformDxe.c
-+  XenSmbiosSupport.c
-+
-+[Packages]
-+  MdePkg/MdePkg.dec
-+  MdeModulePkg/MdeModulePkg.dec
-+  OvmfPkg/OvmfPkg.dec
-+
-+[LibraryClasses]
-+  UefiBootServicesTableLib
-+  MemoryAllocationLib
-+  BaseMemoryLib
-+  BaseLib
-+  UefiLib
-+  UefiDriverEntryPoint
-+  DebugLib
-+  PcdLib
-+  HobLib
-+
-+[Protocols]
-+  gEfiSmbiosProtocolGuid                      # PROTOCOL ALWAYS_PRODUCED
-+
-+[Guids]
-+  gEfiEventReadyToBootGuid                    # PROTOCOL ALWAYS_CONSUMED
-+  gEfiSmbiosTableGuid                         # PROTOCOL ALWAYS_CONSUMED
-+  gEfiXenInfoGuid
-+
-+[FixedPcd]
-+  gEfiMdeModulePkgTokenSpaceGuid.PcdSmbiosVersion
-+
-+[Depex]
-+  TRUE
-Index: OvmfPkg/OvmfPkg.dec
-===================================================================
---- OvmfPkg/OvmfPkg.dec	(revision 12068)
-+++ OvmfPkg/OvmfPkg.dec	(working copy)
-@@ -37,6 +37,7 @@
- 
- [Protocols]
-   gBlockMmioProtocolGuid          = {0x6b558ce3, 0x69e5, 0x4c67, {0xa6, 0x34, 0xf7, 0xfe, 0x72, 0xad, 0xbe, 0x84}}
-+  gEfiXenHvProtocolGuid           = {0x90d9933f, 0x0f3f, 0x4027, {0xaa, 0x7c, 0x05, 0x44, 0xb6, 0x62, 0x38, 0x5f}}
- 
- [PcdsFixedAtBuild]
-   gUefiOvmfPkgTokenSpaceGuid.PcdOvmfMemFvBase|0x0|UINT32|0
 Index: OvmfPkg/OvmfPkgX64.fdf
 ===================================================================
---- OvmfPkg/OvmfPkgX64.fdf	(revision 12068)
+--- OvmfPkg/OvmfPkgX64.fdf	(revision 12124)
 +++ OvmfPkg/OvmfPkgX64.fdf	(working copy)
-@@ -150,9 +150,15 @@
+@@ -150,9 +150,12 @@
  INF  MdeModulePkg/Universal/PCD/Dxe/Pcd.inf
  
  INF  MdeModulePkg/Core/RuntimeDxe/RuntimeDxe.inf
 +#
-+# Xen PV Dxe and Test
++# Xen PV Library Test
 +#
-+INF  OvmfPkg/ParaVirtualizationDxe/ParaVirtualizationDxe.inf
 +INF  OvmfPkg/HypercallTestDxe/HypercallTestDxe.inf
  INF  MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
  INF  MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
- INF  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
-+INF  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
+-INF  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
  INF  PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
  INF  UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
  INF  UefiCpuPkg/CpuDxe/CpuDxe.inf
-@@ -199,7 +205,7 @@
+@@ -198,6 +201,9 @@
+ INF  IntelFrameworkModulePkg/Bus/Isa/Ps2KeyboardDxe/Ps2keyboardDxe.inf
  INF  IntelFrameworkModulePkg/Bus/Isa/IsaFloppyDxe/IsaFloppyDxe.inf
  
++INF  MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
++INF  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
++
  INF  MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
--INF  MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
-+INF  OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf
+ INF  MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
  INF  RuleOverride=ACPITABLE OvmfPkg/AcpiTables/AcpiTables.inf
- 
- INF  RuleOverride = BINARY FatBinPkg/EnhancedFatDxe/Fat.inf

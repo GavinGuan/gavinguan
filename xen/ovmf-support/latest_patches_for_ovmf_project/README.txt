@@ -3,8 +3,8 @@ These patches are updated about a couple of days, and all can be applied to the 
 So, you can use these patches to test the new features.
 
 Be Applied to the version:
-Xen-unstable: changeset:   23734:42edf1481c57
-edk2: revision 12068
+Xen-unstable: changeset:   23761:1f08b380d438
+edk2: revision 12124.
 
 
 
