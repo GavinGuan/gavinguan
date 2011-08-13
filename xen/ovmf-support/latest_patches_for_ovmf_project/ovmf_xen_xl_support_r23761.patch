@@ -1,0 +1,115 @@
+diff -r 1f08b380d438 tools/libxl/libxl.idl
+--- a/tools/libxl/libxl.idl	Wed Aug 10 14:43:34 2011 +0100
++++ b/tools/libxl/libxl.idl	Sun Aug 14 02:14:25 2011 +0800
+@@ -161,6 +161,7 @@
+     ("type",            libxl_domain_type),
+     ("u", KeyedUnion(None, libxl_domain_type, "type",
+                 [("hvm", Struct(None, [("firmware", string),
++                                       ("hvmbios", string),
+                                        ("pae", bool),
+                                        ("apic", bool),
+                                        ("acpi", bool),
+diff -r 1f08b380d438 tools/libxl/libxl_create.c
+--- a/tools/libxl/libxl_create.c	Wed Aug 10 14:43:34 2011 +0100
++++ b/tools/libxl/libxl_create.c	Sun Aug 14 02:14:25 2011 +0800
+@@ -90,6 +90,7 @@
+     case LIBXL_DOMAIN_TYPE_HVM:
+         b_info->video_memkb = 8 * 1024;
+         b_info->u.hvm.firmware = NULL;
++        b_info->u.hvm.hvmbios = NULL;
+         b_info->u.hvm.pae = 1;
+         b_info->u.hvm.apic = 1;
+         b_info->u.hvm.acpi = 1;
+@@ -515,7 +516,7 @@
+         libxl_device_console_destroy(&console);
+ 
+         dm_info->domid = domid;
+-        ret = libxl__create_device_model(gc, dm_info,
++        ret = libxl__create_device_model(gc, dm_info, &d_config->b_info,
+                                         d_config->disks, d_config->num_disks,
+                                         d_config->vifs, d_config->num_vifs,
+                                         &dm_starting);
+@@ -562,7 +563,8 @@
+             xenpv_dm_info.extra_pv = d_config->dm_info.extra_pv;
+             xenpv_dm_info.extra_hvm = d_config->dm_info.extra_hvm;
+ 
+-            libxl__create_xenpv_qemu(gc, domid, &xenpv_dm_info,
++            libxl__create_xenpv_qemu(gc, domid, 
++                                     &xenpv_dm_info, &d_config->b_info,
+                                      d_config->vfbs, &dm_starting);
+         }
+         break;
+diff -r 1f08b380d438 tools/libxl/libxl_dm.c
+--- a/tools/libxl/libxl_dm.c	Wed Aug 10 14:43:34 2011 +0100
++++ b/tools/libxl/libxl_dm.c	Sun Aug 14 02:14:25 2011 +0800
+@@ -69,10 +69,16 @@
+ }
+ 
+ static const char *libxl__domain_bios(libxl__gc *gc,
+-                                libxl_device_model_info *info)
++                                libxl_device_model_info *info,
++                                libxl_domain_build_info *b_info)
+ {
+     switch (info->device_model_version) {
+-    case 1: return "rombios";
++    case 1: if ((b_info->u.hvm.hvmbios != NULL) &&
++                (!strcmp(b_info->u.hvm.hvmbios, "ovmf-ia32") ||
++                 !strcmp(b_info->u.hvm.hvmbios, "ovmf-x64"))) {
++              return b_info->u.hvm.hvmbios;
++            }
++            return "rombios";
+     case 2: return "seabios";
+     default:return NULL;
+     }
+@@ -761,7 +767,7 @@
+     xenpv_dm_info.extra_hvm = info->extra_hvm;
+ 
+     if (libxl__create_xenpv_qemu(gc, domid,
+-                                 &xenpv_dm_info,
++                                 &xenpv_dm_info, &b_info,
+                                  vfb, &dm_starting) < 0) {
+         ret = ERROR_FAIL;
+         goto out_free;
+@@ -790,6 +796,7 @@
+ 
+ int libxl__create_device_model(libxl__gc *gc,
+                               libxl_device_model_info *info,
++                              libxl_domain_build_info *b_info,
+                               libxl_device_disk *disks, int num_disks,
+                               libxl_device_nic *vifs, int num_vifs,
+                               libxl__device_model_starting **starting_r)
+@@ -838,7 +845,7 @@
+     path = libxl__sprintf(gc, "/local/domain/%d/hvmloader", info->domid);
+     xs_mkdir(ctx->xsh, XBT_NULL, path);
+     libxl__xs_write(gc, XBT_NULL, libxl__sprintf(gc, "%s/bios", path),
+-                    "%s", libxl__domain_bios(gc, info));
++                    "%s", libxl__domain_bios(gc, info, b_info));
+ 
+     path = libxl__sprintf(gc, "/local/domain/0/device-model/%d", info->domid);
+     xs_mkdir(ctx->xsh, XBT_NULL, path);
+@@ -1030,10 +1037,11 @@
+ 
+ int libxl__create_xenpv_qemu(libxl__gc *gc, uint32_t domid,
+                              libxl_device_model_info *info,
++                             libxl_domain_build_info *b_info,
+                              libxl_device_vfb *vfb,
+                              libxl__device_model_starting **starting_r)
+ {
+     libxl__build_xenpv_qemu_args(gc, domid, vfb, info);
+-    libxl__create_device_model(gc, info, NULL, 0, NULL, 0, starting_r);
++    libxl__create_device_model(gc, info, b_info, NULL, 0, NULL, 0, starting_r);
+     return 0;
+ }
+diff -r 1f08b380d438 tools/libxl/xl_cmdimpl.c
+--- a/tools/libxl/xl_cmdimpl.c	Wed Aug 10 14:43:34 2011 +0100
++++ b/tools/libxl/xl_cmdimpl.c	Sun Aug 14 02:14:25 2011 +0800
+@@ -677,6 +677,9 @@
+ 
+         xlu_cfg_replace_string (config, "firmware_override",
+                                 &b_info->u.hvm.firmware);
++
++        xlu_cfg_replace_string (config, "hvmbios",
++                                &b_info->u.hvm.hvmbios);
+         if (!xlu_cfg_get_long (config, "pae", &l))
+             b_info->u.hvm.pae = l;
+         if (!xlu_cfg_get_long (config, "apic", &l))
