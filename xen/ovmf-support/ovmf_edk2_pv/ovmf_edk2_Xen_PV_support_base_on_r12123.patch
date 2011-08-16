@@ -59,7 +59,7 @@ Index: OvmfPkg/HypercallTestDxe/HypercallTestDxe.c
 ===================================================================
 --- OvmfPkg/HypercallTestDxe/HypercallTestDxe.c	(revision 0)
 +++ OvmfPkg/HypercallTestDxe/HypercallTestDxe.c	(revision 0)
-@@ -0,0 +1,157 @@
+@@ -0,0 +1,202 @@
 +/** @file
 +  Xen PV test Dxe.
 +
@@ -118,11 +118,11 @@ Index: OvmfPkg/HypercallTestDxe/HypercallTestDxe.c
 +  Minor = HypervisorXenVersion(XENVER_VERSION, 0);
 +  Major = Minor >> 16;
 +  Minor &= 0xFFFF;
-+  DEBUG ((EFI_D_INFO, "[TestInfo_CallHypercallFromDXE]OVMF is running on Xen version: %d.%d\n", Major, Minor));
++  DEBUG ((EFI_D_INFO, "[HypercallTest_CallHypercallFromDXE]OVMF is running on Xen version: %d.%d\n", Major, Minor));
 +
 +  Status = HypervisorXenVersion(XENVER_EXTRAVERSION, ExtraVersion);
 +  ASSERT_EFI_ERROR (Status);
-+  DEBUG ((EFI_D_INFO, "[TestInfo_CallHypercallFromDXE]Detected Xen"));
++  DEBUG ((EFI_D_INFO, "[HypercallTest_CallHypercallFromDXE]Detected Xen"));
 +  PrintAsciiStr(ExtraVersion, 16);
 +
 +  return EFI_SUCCESS;
@@ -139,9 +139,15 @@ Index: OvmfPkg/HypercallTestDxe/HypercallTestDxe.c
 +  )
 +{
 +  //
-+  // Pointer to the value of "hvmloader/bios" in Xenstore.
++  // Pointer to the value of a key in Xenstore.
 +  //
 +  CHAR8            *XenstoreValue;
++  //
++  // Array of pointers to keys of a directory.
++  //
++  CHAR8            **XenstoreValuePtrs;
++  UINTN            Index;
++  DOMID            DomId;
 +
 +  //
 +  // Set Xenbus.
@@ -149,27 +155,66 @@ Index: OvmfPkg/HypercallTestDxe/HypercallTestDxe.c
 +  XenbusSetup ();
 +
 +  //
-+  // Read the value of a key from xenstore.
++  // Get current domain ID
++  //
++  DomId = XenbusGetDomId ();
++  if (DomId < 0) {
++    DEBUG ((EFI_D_ERROR, "Can't get domain ID!\n"));
++  }
++  else {
++    DEBUG ((EFI_D_INFO, "[XenbusTest_GetDomIdFromXenstore] Domain Id: %d\n", DomId));
++  }
++
++  //
++  // Read a value from xenstore.
 +  //
 +  XenstoreValue = NULL;
-+  XenstoreRead ("hvmloader/bios", &XenstoreValue);
-+  DEBUG ((EFI_D_INFO, "[TestInfo_Xenbus_ReadXenstore] Old HVM BIOS (hvmloader/bios): "));
++  XenbusRead ("hvmloader/bios", &XenstoreValue);
++  DEBUG ((EFI_D_INFO, "[XenbusTest_ReadXenstore] Old HVM BIOS (hvmloader/bios): "));
++  PrintAsciiStr(XenstoreValue, 30);
++
++  XenbusRead ("name", &XenstoreValue);
++  DEBUG ((EFI_D_INFO, "[XenbusTest_ReadXenstore] Old HVM BIOS (name): "));
 +  PrintAsciiStr(XenstoreValue, 30);
 +
 +  //
-+  // Modify the value of a key in xenstore.
++  // Write a value into xenstore.
 +  // TODO modify failed!!
 +  //
-+  XenstoreWrite ("hvmloader/bios", "ovmf-pv-test");
-+  DEBUG ((EFI_D_INFO, "[TestInfo_Xenbus_WriteXenstore] Write to Xenstore\n"));
-+  XenstoreRead ("hvmloader/bios", &XenstoreValue);
-+  DEBUG ((EFI_D_INFO, "[TestInfo_Xenbus_WriteXenstore] New HVM BIOS (hvmloader/bios): "));
++  DEBUG ((EFI_D_INFO, "[XenbusTest_WriteXenstore] Write to Xenstore\n"));
++  XenbusWrite ("hvmloader/bios", "ovmf-pv-test");
++  XenbusRead ("hvmloader/bios", &XenstoreValue);
++  DEBUG ((EFI_D_INFO, "[XenbusTest_WriteXenstore] New HVM BIOS (hvmloader/bios): "));
 +  PrintAsciiStr(XenstoreValue, 30);
++
++  //
++  // Create a new key in Xenstore
++  //
++  //DEBUG ((EFI_D_INFO, "[XenbusTest_WriteXenstore_2] Write to Xenstore\n"));
++  //XenbusWrite ("testkey", "ovmf-hvm");
++  //XenbusRead ("testkey", &XenstoreValue);
++  //DEBUG ((EFI_D_INFO, "[XenbusTest_ReadXenstore] Old HVM BIOS (testkey): "));
++  //PrintAsciiStr(XenstoreValue, 30);
++
++  //
++  // List a directory in xenstore.
++  //
++  XenstoreValuePtrs = NULL;
++  XenbusLs ("device", &XenstoreValuePtrs);
++  if (XenstoreValuePtrs) {
++    DEBUG ((EFI_D_INFO, "[XenbusTest_ReadDireXenstore] Diretory in Xenstore (device): \n"));
++    for (Index = 0; Index < (XENSTORE_PAYLOAD_MAX + 1); Index++) {
++      if (!XenstoreValuePtrs[Index]) {
++        break;
++      }
++      PrintAsciiStr((CHAR8 *) (UINTN) XenstoreValuePtrs[Index] , 30);
++    }
++  }
 +
 +  //
 +  // Clear the Xenbus.
 +  //
-+  XenbusShutdown();
++  XenbusShutdown ();
 +
 +  return EFI_SUCCESS;
 +}
@@ -257,7 +302,7 @@ Index: OvmfPkg/Include/Library/XenLib.h
 ===================================================================
 --- OvmfPkg/Include/Library/XenLib.h	(revision 0)
 +++ OvmfPkg/Include/Library/XenLib.h	(revision 0)
-@@ -0,0 +1,376 @@
+@@ -0,0 +1,436 @@
 +/** @file
 +
 +  XEN_HV_PROTOCOL protocol allows consumers to log SMBIOS data records, and enables the producer 
@@ -313,7 +358,7 @@ Index: OvmfPkg/Include/Library/XenLib.h
 +//
 +#define HVMOP_SET_PARAM        0
 +#define HVMOP_GET_PARAM        1
-+typedef UINT16 DOMID;
++//typedef UINT16                 DOMID;
 +typedef struct {
 +  DOMID             DomId;
 +  UINT32            Index;
@@ -324,9 +369,11 @@ Index: OvmfPkg/Include/Library/XenLib.h
 +//
 +// For Sched Hypercall (HYPERVISOR_SCHED_OP)
 +//
++
++#define SCHEDOP_SHUTDOWN       2
 +#define SCHEDOP_POLL           3
 +typedef struct {
-+  UINT32           *Ptr;
++  UINT32            *Ptr;
 +} XEN_GUEST_HANDLE;
 +
 +typedef struct {
@@ -335,11 +382,20 @@ Index: OvmfPkg/Include/Library/XenLib.h
 +  UINTN             Timeout;
 +} SCHED_POLL;
 +
++//
++// Reason codes for SCHEDOP_SHUTDOWN
++//
++#define SHUTDOWN_POWEROFF      0
++#define SHUTDOWN_REBOOT        1
++#define SHUTDOWN_SUSPEND       2
++#define SHUTDOWN_CRASH         3
++#define SHUTDOWN_WATCHDOG      4
++
 +
 +//
 +// For Memory Hypercall (HYPERVISOR_MEMORY_OP)
 +//
-+typedef UINTN    XEN_PFN;
++//typedef UINTN          XEN_PFN;
 +
 +#define XENMEM_ADD_TO_PHYSMAP          7
 +#define XENMAPSPACE_SHARED_INFO        0
@@ -443,6 +499,8 @@ Index: OvmfPkg/Include/Library/XenLib.h
 +  UINTN                    Length;
 +} EFI_XENSTORE_REQUEST;
 +
++#define ARRAY_SIZE(arr) (sizeof(arr)/sizeof(arr[0]))
++
 +//
 +// Inter-domain shared memory communications.
 +//
@@ -491,36 +549,67 @@ Index: OvmfPkg/Include/Library/XenLib.h
 +  VOID
 +  );
 +
-+/** 
++/**
 +  Read a Xenstore key. Returns a nul-terminated string or NULL.
 +
-+  @param IN Path       The Xenstore key path.
-+  @param IN Buffer     The value to assgin to the key.
++  @param IN  Path            The Xenstore key path.
++  @param OUT Data            The value to of the key.
 +
-+  @return              EFI_STATUS.
++  @return EFI_SUCCESS        Successly.
++  @return Other              Error.
 +
 +**/
 +EFI_STATUS
 +EFIAPI
-+XenstoreRead (
++XenbusRead (
 +  IN     CHAR8                    *Path,
-+  OUT    CHAR8                    **Buffer
++  OUT    CHAR8                    **Data
 +  );
 +
-+/** 
-+  Write a key-value pair in Xenstore.
++/**
++  Create or modify a Xenstore key.
 +
-+  @param IN Path       The Xenstore key path.
-+  @param IN Buffer     The value to assgin to the key.
++  @param IN  Path            The Xenstore key path.
++  @param IN  Data            The value to of the key.
 +
-+  @return              EFI_STATUS.
++  @return EFI_SUCCESS        Successly.
++  @return Other              Error.
 +
 +**/
 +EFI_STATUS
 +EFIAPI
-+XenstoreWrite (
++XenbusWrite (
 +  IN     CHAR8                    *Path,
-+  IN     CHAR8                    *Buffer
++  IN     CHAR8                    *Data
++  );
++
++/**
++  List a Xenstore directory.
++
++  @param IN  Path            The Xenstore key path.
++  @param OUT DataArray       A array of pointers to the key under the directory.
++
++  @return EFI_SUCCESS        Successly.
++  @return Other              Error.
++
++**/
++EFI_STATUS
++EFIAPI
++XenbusLs (
++  IN     CHAR8                    *Path,
++  OUT    CHAR8                    ***DataArray
++  );
++
++/**
++  Get domain ID from xenstore.
++
++  @return  The ID of surrent Domain.
++
++**/
++DOMID
++EFIAPI
++XenbusGetDomId (
++  VOID
 +  );
 +
 +
@@ -532,6 +621,31 @@ Index: OvmfPkg/Include/Library/XenLib.h
 +// Maximum number of virtual CPUs in multi-processor guests.
 +//
 +#define XEN_LEGACY_MAX_VCPUS 32
++
++//
++// Definitions for architecture-specific types
++//
++#if   defined (MDE_CPU_IA32)
++//
++// The IA-32 architecture struct used by VCPU_INFO.
++//
++typedef struct {
++  UINTN                 CR2;
++  UINTN                 Pad[5];
++} ARCH_VCPU_INFO;
++
++#endif // defined (MDE_CPU_IA32)
++
++#if defined (MDE_CPU_X64)
++//
++// The X64 architecture struct used by VCPU_INFO.
++//
++typedef struct {
++  UINTN                 CR2;
++  UINTN                 Pad;
++} ARCH_VCPU_INFO;
++
++#endif // defined (MDE_CPU_X64)
 +
 +typedef struct {
 +  //
@@ -545,16 +659,7 @@ Index: OvmfPkg/Include/Library/XenLib.h
 +
 +  UINTN                 NmiReason;
 +  UINT64                Pad[32];
-+} ARCH_SHARED_INFO;
-+
-+//
-+// TODO layout this struct for different platform (IA32 and X64).
-+//
-+typedef struct {
-+  UINTN                 CR2;
-+  //UINTN                 Pad[5];  //For Ia32
-+  UINTN                 Pad;       //For X64
-+} ARCH_VCPU_INFO;
++} __attribute__((__packed__)) ARCH_SHARED_INFO;
 +
 +typedef struct {
 +  UINT32                Version;
@@ -638,7 +743,7 @@ Index: OvmfPkg/Include/Library/XenHypercallLib.h
 ===================================================================
 --- OvmfPkg/Include/Library/XenHypercallLib.h	(revision 0)
 +++ OvmfPkg/Include/Library/XenHypercallLib.h	(revision 0)
-@@ -0,0 +1,516 @@
+@@ -0,0 +1,664 @@
 +/** @file
 +
 +  This library provides consumers all Xen Hypercall.
@@ -661,42 +766,42 @@ Index: OvmfPkg/Include/Library/XenHypercallLib.h
 +//
 +// HYPERCALLS NUMBER
 +//
-+#define HYPERVISOR_SET_TRAP_TABLE          0//
-+#define HYPERVISOR_MMU_UPDATE              1//
-+#define HYPERVISOR_SET_GDT                 2//
-+#define HYPERVISOR_STACK_SWITCH            3//
-+#define HYPERVISOR_SET_CALLBACKS           4//
-+#define HYPERVISOR_FPU_TASKSWITCH          5//
++#define HYPERVISOR_SET_TRAP_TABLE          0
++#define HYPERVISOR_MMU_UPDATE              1
++#define HYPERVISOR_SET_GDT                 2
++#define HYPERVISOR_STACK_SWITCH            3
++#define HYPERVISOR_SET_CALLBACKS           4
++#define HYPERVISOR_FPU_TASKSWITCH          5
 +#define HYPERVISOR_SCHED_OP_COMPAT         6
 +#define HYPERVISOR_PLATFORM_OP             7
-+#define HYPERVISOR_SET_DEBUGREG            8//
-+#define HYPERVISOR_GET_DEBUGREG            9//
-+#define HYPERVISOR_UPDATE_DESCRIPTOR       10//
-+#define HYPERVISOR_MEMORY_OP               12   //
-+#define HYPERVISOR_MULTICALL               13//
-+#define HYPERVISOR_UPDATE_VA_MAPPING       14//
-+#define HYPERVISOR_SET_TIMER_OP            15//
++#define HYPERVISOR_SET_DEBUGREG            8
++#define HYPERVISOR_GET_DEBUGREG            9
++#define HYPERVISOR_UPDATE_DESCRIPTOR       10
++#define HYPERVISOR_MEMORY_OP               12
++#define HYPERVISOR_MULTICALL               13
++#define HYPERVISOR_UPDATE_VA_MAPPING       14
++#define HYPERVISOR_SET_TIMER_OP            15
 +#define HYPERVISOR_EVENT_CHANNEL_OP_COMPAT 16
-+#define HYPERVISOR_XEN_VERSION             17   //
-+#define HYPERVISOR_CONSOLE_IO              18//
++#define HYPERVISOR_XEN_VERSION             17
++#define HYPERVISOR_CONSOLE_IO              18
 +#define HYPERVISOR_PHYSDEV_OP_COMPAT       19
-+#define HYPERVISOR_GRANT_TABLE_OP          20   //
-+#define HYPERVISOR_VM_ASSIST               21//
-+#define HYPERVISOR_UPDATE_VA_MAPPING_OTHERDOMAIN 22//
++#define HYPERVISOR_GRANT_TABLE_OP          20
++#define HYPERVISOR_VM_ASSIST               21
++#define HYPERVISOR_UPDATE_VA_MAPPING_OTHERDOMAIN 22
 +#define HYPERVISOR_IRET                    23
-+#define HYPERVISOR_VCPU_OP                 24//
-+#define HYPERVISOR_SET_SEGMENT_BASE        25//
-+#define HYPERVISOR_MMUEXT_OP               26//
++#define HYPERVISOR_VCPU_OP                 24
++#define HYPERVISOR_SET_SEGMENT_BASE        25
++#define HYPERVISOR_MMUEXT_OP               26
 +#define HYPERVISOR_XSM_OP                  27
-+#define HYPERVISOR_NMI_OP                  28//
-+#define HYPERVISOR_SCHED_OP                29   //
++#define HYPERVISOR_NMI_OP                  28
++#define HYPERVISOR_SCHED_OP                29
 +#define HYPERVISOR_CALLBACK_OP             30
 +#define HYPERVISOR_XENOPROF_OP             31
-+#define HYPERVISOR_EVENT_CHANNEL_OP        32   //
-+#define HYPERVISOR_PHYSDEV_OP              33//
-+#define HYPERVISOR_HVM_OP                  34   //
-+#define HYPERVISOR_SYSCTL                  35//
-+#define HYPERVISOR_DOMCTL                  36//
++#define HYPERVISOR_EVENT_CHANNEL_OP        32
++#define HYPERVISOR_PHYSDEV_OP              33
++#define HYPERVISOR_HVM_OP                  34
++#define HYPERVISOR_SYSCTL                  35
++#define HYPERVISOR_DOMCTL                  36
 +#define HYPERVISOR_KEXEC_OP                37
 +#define HYPERVISOR_TMEM_OP                 38
 +
@@ -709,65 +814,159 @@ Index: OvmfPkg/Include/Library/XenHypercallLib.h
 +#define HYPERVISOR_ARCH_6                  54
 +#define HYPERVISOR_ARCH_7                  55
 +
++///
++/// Structs for Hypercall parameters.
++///
++typedef UINT16                 DOMID;
++typedef UINTN                  XEN_PFN;
++
++typedef struct {
++  //
++  // Exception vector
++  //
++  UINT8        Vector;
++  //
++  // 0-3: privilege level; 4: clear event enable?
++  //
++  UINT8        Flags;
++  //
++  // Code selector
++  //
++  UINT16       CS;
++  //
++  // Code offset
++  //
++  UINTN        Address;
++} TRAP_INFO;
++
++typedef struct {
++  //
++  // Machine address of PTE
++  //
++  UINT64       Ptr;
++  //
++  // New contents of PTE
++  //
++  UINT64       Val;
++} MMU_UPDATE;
++
++typedef struct {
++  UINT32       Cmd;
++  union {
++    XEN_PFN      Mfn;
++    UINTN        LinearAddr;
++  } Arg1;
++  union {
++    UINT32       NrEnts;
++    //
++    // This item has something to do with xen interface version.
++    //
++    const VOID   *Vcpumask;
++
++    XEN_PFN      SrcMfn;
++  } Arg2;
++} MMUEXT_OP;
++
++//
++// Definitions for architecture-specific types
++//
++#if   defined (MDE_CPU_IA32)
++typedef struct {
++    UINTN        PteLow;
++    UINTN        PteHigh;
++} PTE;
++#endif
++
++#if defined (MDE_CPU_X64)
++typedef struct {
++    UINTN        Pte;
++} PTE;
++#endif
++
 +/**
 +  Hypercall methods.
 +
-+  @param[in]    TODO parameters description
-+  @param[in]    TODO parameters description
++  @param[in]    TODO parameters description. Make clear of IN and OUT of the parameters
 +
 +**/
 +/**
 +  Hypercall #0: HYPERVISOR_SET_TRAP_TABLE
++  TODO Untested
 +**/
 +EFI_STATUS
 +EFIAPI
 +HypervisorSetTrapTable (
-+  //TODO Add parameters
++  IN OUT TRAP_INFO     *Table
 +  );
 +
 +/**
 +  Hypercall #1: HYPERVISOR_MMU_UPDATE
++  TODO Untested
 +**/
 +EFI_STATUS
 +EFIAPI
 +HypervisorMmuUpdate (
-+  //TODO Add parameters
++  IN  MMU_UPDATE    *Req,
++  IN  UINTN         Count,
++  OUT UINTN         *SuccessCount,
++  IN  DOMID         DomId
 +  );
 +
 +/**
 +  Hypercall #2: HYPERVISOR_SET_GDT
++  TODO Untested
 +**/
 +EFI_STATUS
 +EFIAPI
 +HypervisorSetGdt (
-+  //TODO Add parameters
++  IN  UINTN         *FrameList,
++  IN  UINTN         Entries
 +  );
 +
 +/**
 +  Hypercall #3: HYPERVISOR_STACK_SWITCH
++  TODO Untested
 +**/
 +EFI_STATUS
 +EFIAPI
 +HypervisorStackSwitch (
-+  //TODO Add parameters
++  IN  UINTN         SS,
++  IN  UINTN         Esp
 +  );
 +
 +/**
 +  Hypercall #4: HYPERVISOR_SET_CALLBACKS
++  TODO Untested
 +**/
++#if   defined (MDE_CPU_IA32)
 +EFI_STATUS
 +EFIAPI
 +HypervisorSetCallbacks (
-+  //TODO Add parameters
++  IN  UINTN         EventSelector,
++  IN  UINTN         EventAddress,
++  IN  UINTN         FailsafeSelector,
++  IN  UINTN         FailsafeAddress
 +  );
++#endif
++
++#if defined (MDE_CPU_X64)
++EFI_STATUS
++EFIAPI
++HypervisorSetCallbacks (
++  IN  UINTN         EventAddress,
++  IN  UINTN         FailsafeAddress,
++  IN  UINTN         SyscallAddress
++  );
++#endif
 +
 +/**
 +  Hypercall #5: HYPERVISOR_FPU_TASKSWITCH
++  TODO Untested
 +**/
 +EFI_STATUS
 +EFIAPI
 +HypervisorFpuTaskswitch (
-+  IN UINTN      Cmd
++  IN  UINTN         Set
 +  );
 +
 +/**
@@ -790,30 +989,46 @@ Index: OvmfPkg/Include/Library/XenHypercallLib.h
 +
 +/**
 +  Hypercall #8: HYPERVISOR_SET_DEBUGREG
++  TODO Untested
 +**/
 +EFI_STATUS
 +EFIAPI
 +HypervisorSetDebugreg (
-+  //TODO Add parameters
++  IN  UINTN         Reg,
++  IN  UINTN         Value
 +  );
 +
 +/**
 +  Hypercall #9: HYPERVISOR_GET_DEBUGREG
++  TODO Untested
 +**/
 +EFI_STATUS
 +EFIAPI
 +HypervisorGetDebugreg (
-+  //TODO Add parameters
++  IN  UINTN         Reg
 +  );
 +
 +/**
 +  Hypercall #10: HYPERVISOR_UPDATE_DESCRIPTOR
++  TODO Untested
 +**/
++#if   defined (MDE_CPU_IA32)
 +EFI_STATUS
 +EFIAPI
 +HypervisorUpdateDescriptor (
-+  //TODO Add parameters
++  IN  UINT64        Ma,
++  IN  UINT64        Desc
 +  );
++#endif
++
++#if defined (MDE_CPU_X64)
++EFI_STATUS
++EFIAPI
++HypervisorUpdateDescriptor (
++  IN  UINTN         Ma,
++  IN  UINTN         Word
++  );
++#endif
 +
 +/**
 +  Hypercall #12: HYPERVISOR_MEMORY_OP
@@ -821,38 +1036,42 @@ Index: OvmfPkg/Include/Library/XenHypercallLib.h
 +EFI_STATUS
 +EFIAPI
 +HypervisorMemoryOp (
-+  IN UINTN      Cmd,
-+  IN VOID       *Arg
++  IN  UINTN         Cmd,
++  IN  VOID          *Arg
 +  );
 +
 +/**
 +  Hypercall #13: HYPERVISOR_MULTICALL
++  TODO Untested
 +**/
 +EFI_STATUS
 +EFIAPI
 +HypervisorMulticall (
-+  //TODO Add parameters
++  IN  VOID          *CallList,
++  IN  UINTN         NrCalls
 +  );
 +
 +/**
 +  Hypercall #14: HYPERVISOR_UPDATE_VA_MAPPING
++  TODO Untested
 +**/
 +EFI_STATUS
 +EFIAPI
 +HypervisorUpdateVaMapping (
-+  //TODO Add parameters
++  IN  UINTN         Va,
++  IN  PTE           NewVal,
++  IN  UINTN         Flags
 +  );
-+
 +
 +/**
 +  Hypercall #15: HYPERVISOR_SET_TIMER_OP
++  TODO Untested
 +**/
 +EFI_STATUS
 +EFIAPI
 +HypervisorSetTimerOp (
-+  //TODO Add parameters
++  IN UINT64     Timeout
 +  );
-+
 +
 +/**
 +  Hypercall #16: HYPERVISOR_EVENT_CHANNEL_OP_COMPAT
@@ -875,11 +1094,14 @@ Index: OvmfPkg/Include/Library/XenHypercallLib.h
 +
 +/**
 +  Hypercall #18: HYPERVISOR_CONSOLE_IO
++  TODO Untested
 +**/
 +EFI_STATUS
 +EFIAPI
 +HypervisorConsoleIo (
-+  //TODO Add parameters
++  IN  UINTN         Cmd,
++  IN  UINTN         Count,
++  OUT CHAR8         *Str
 +  );
 +
 +/**
@@ -904,20 +1126,26 @@ Index: OvmfPkg/Include/Library/XenHypercallLib.h
 +
 +/**
 +  Hypercall #21: HYPERVISOR_VM_ASSIST
++  TODO Untested
 +**/
 +EFI_STATUS
 +EFIAPI
 +HypervisorVmAssist (
-+  //TODO Add parameters
++  IN  UINTN         Cmd,
++  IN  UINTN         Type
 +  );
 +
 +/**
 +  Hypercall #22: HYPERVISOR_UPDATE_VA_MAPPING_OTHERDOMAIN
++  TODO Untested
 +**/
 +EFI_STATUS
 +EFIAPI
 +HypervisorUpdateVaMappingOtherdomain (
-+  //TODO Add parameters
++  IN  UINTN         Va,
++  IN  PTE           NewVal,
++  IN  UINTN         Flags,
++  IN  DOMID         DomId
 +  );
 +
 +/**
@@ -931,29 +1159,40 @@ Index: OvmfPkg/Include/Library/XenHypercallLib.h
 +
 +/**
 +  Hypercall #24: HYPERVISOR_VCPU_OP
++  TODO Untested
 +**/
 +EFI_STATUS
 +EFIAPI
 +HypervisorVcpuOp (
-+  //TODO Add parameters
++  IN  UINTN         Cmd,
++  IN  UINTN         VcpuId,
++  IN  VOID          *ExtraArgs
 +  );
 +
 +/**
 +  Hypercall #25: HYPERVISOR_SET_SEGMENT_BASE
++  TODO Untested
 +**/
++#if defined (MDE_CPU_X64)
 +EFI_STATUS
 +EFIAPI
 +HypervisorSetSegmentBase (
-+  //TODO Add parameters
++  IN  UINTN         Reg,
++  IN  UINTN         Value
 +  );
++#endif
 +
 +/**
 +  Hypercall #26: HYPERVISOR_MMUEXT_OP
++  TODO Untested
 +**/
 +EFI_STATUS
 +EFIAPI
 +HypervisorMmuextOp (
-+  //TODO Add parameters
++  IN  MMUEXT_OP     *Op,
++  IN  UINTN         Count,
++  OUT UINTN         *SuccessCount,
++  IN  DOMID         DomId
 +  );
 +
 +/**
@@ -967,11 +1206,13 @@ Index: OvmfPkg/Include/Library/XenHypercallLib.h
 +
 +/**
 +  Hypercall #28: HYPERVISOR_NMI_OP
++  TODO Untested
 +**/
 +EFI_STATUS
 +EFIAPI
 +HypervisorNmiOp (
-+  //TODO Add parameters
++  IN  UINTN         Cmd,
++  IN  UINTN         Arg
 +  );
 +
 +/**
@@ -980,8 +1221,17 @@ Index: OvmfPkg/Include/Library/XenHypercallLib.h
 +EFI_STATUS
 +EFIAPI
 +HypervisorSchedOp (
-+  IN UINTN      Cmd,
-+  IN VOID       *Arg
++  IN UINTN          Cmd,
++  IN VOID           *Arg
++  );
++
++/**
++  Hypercall #29-2: HYPERVISOR_SCHED_OP
++**/
++EFI_STATUS
++EFIAPI
++HypervisorSuspend (
++  IN UINTN      Srec
 +  );
 +
 +/**
@@ -1008,17 +1258,18 @@ Index: OvmfPkg/Include/Library/XenHypercallLib.h
 +EFI_STATUS
 +EFIAPI
 +HypervisorEventChannelOp (
-+  IN UINTN Cmd,
-+  IN VOID  *Arg
++  IN UINTN     Cmd,
++  IN VOID      *Arg
 +  );
 +
 +/**
 +  Hypercall #33: HYPERVISOR_PHYSDEV_OP 
++  TODO Untested
 +**/
 +EFI_STATUS
 +EFIAPI
 +HypervisorPhysdevOp (
-+  //TODO Add parameters
++  IN VOID       *Arg
 +  );
 +
 +/**
@@ -1027,26 +1278,28 @@ Index: OvmfPkg/Include/Library/XenHypercallLib.h
 +EFI_STATUS
 +EFIAPI
 +HypervisorHvmOp (
-+  IN UINTN Cmd,
-+  IN VOID  *Arg
++  IN UINTN      Cmd,
++  IN VOID       *Arg
 +  );
 +
 +/**
 +  Hypercall #35: HYPERVISOR_SYSCTL
++  TODO Untested
 +**/
 +EFI_STATUS
 +EFIAPI
 +HypervisorSysctl (
-+  //TODO Add parameters
++  IN UINTN      Op
 +  );
 +
 +/**
 +  Hypercall #36: HYPERVISOR_DOMCTL
++  TODO Untested
 +**/
 +EFI_STATUS
 +EFIAPI
 +HypervisorDomctl (
-+  //TODO Add parameters
++  IN UINTN      Op
 +  );
 +
 +/**
@@ -1159,7 +1412,7 @@ Index: OvmfPkg/Library/XenLib/XenLib.c
 ===================================================================
 --- OvmfPkg/Library/XenLib/XenLib.c	(revision 0)
 +++ OvmfPkg/Library/XenLib/XenLib.c	(revision 0)
-@@ -0,0 +1,83 @@
+@@ -0,0 +1,82 @@
 +/**@file
 +  This file holds the common functions used by xen paravirtualization.
 +
@@ -1200,7 +1453,7 @@ Index: OvmfPkg/Library/XenLib/XenLib.c
 +  AddPhysmap.Space  = XENMAPSPACE_SHARED_INFO;
 +  AddPhysmap.Index  = 0;
 +
-+  SharedInfoPtr   = (EFI_XEN_SHARED_INFO *)AllocatePages(EFI_PAGE_SIZE);
++  SharedInfoPtr   = (EFI_XEN_SHARED_INFO *) AllocatePages (EFI_PAGE_SIZE);
 +  AddPhysmap.Gpfn = (UINTN)(SharedInfoPtr) >> EFI_PAGE_SHIFT;
 +
 +  if (HypervisorMemoryOp(XENMEM_ADD_TO_PHYSMAP, &AddPhysmap)) {
@@ -1208,7 +1461,6 @@ Index: OvmfPkg/Library/XenLib/XenLib.c
 +    return NULL;
 +  }
 +
-+  DEBUG ((EFI_D_INFO, "SharedInfoPtr = %x\n", SharedInfoPtr)); 
 +  return (VOID *) SharedInfoPtr;
 +}
 +
@@ -1247,9 +1499,11 @@ Index: OvmfPkg/Library/XenLib/XenBus.c
 ===================================================================
 --- OvmfPkg/Library/XenLib/XenBus.c	(revision 0)
 +++ OvmfPkg/Library/XenLib/XenBus.c	(revision 0)
-@@ -0,0 +1,471 @@
+@@ -0,0 +1,514 @@
 +/**@file
-+  This file holds the xenbus methods, which can setup xenbus, write and read xenstore entry.
++  This file holds the Xenbus methods, which can setup Xenbus, write and read xenstore entry.
++  Before all the Xenbus operations, XenbusSetup() should execute firstly. 
++  Don't forget to close the Xenbus using XenbusShutdown() after the all the operations done.
 +
 +  Copyright (c) 2011, Bei Guan <gbtju85@gmail.com>
 +
@@ -1274,6 +1528,7 @@ Index: OvmfPkg/Library/XenLib/XenBus.c
 +//
 +EFI_EVENT_CHANNEL_PORT            Event;
 +static CHAR8                      Payload[XENSTORE_PAYLOAD_MAX + 1];
++static CHAR8                      *PayloadPtr[XENSTORE_PAYLOAD_MAX + 1];
 +
 +
 +/**
@@ -1389,7 +1644,7 @@ Index: OvmfPkg/Library/XenLib/XenBus.c
 +}
 +
 +/**
-+  Copy data in and out of the ring
++  Copy data in and out of the ring.
 +
 +  @param IN Data      The data to write into the shared ring.
 +  @param IN Length    The length of the data.
@@ -1445,17 +1700,17 @@ Index: OvmfPkg/Library/XenLib/XenBus.c
 +}
 +
 +/**
-+  Copy data in and out of the ring
++  Copy data in and out of the ring.
 +
-+  @param IN Data      The data read from the shared ring.
-+  @param IN Length    The length of the data.
++  @param OUT Data      The data read from the shared ring.
++  @param OUT Length    The length of the data.
 +
 +**/
 +VOID
 +EFIAPI
 +RingRead (
-+  IN     CHAR8                    *Data,
-+  IN     UINTN                    Length
++  OUT    CHAR8                    *Data,
++  OUT    UINTN                    Length
 +  )
 +{
 +  UINT32           TotleOff;
@@ -1501,32 +1756,42 @@ Index: OvmfPkg/Library/XenLib/XenBus.c
 +}
 +
 +/**
-+  Send a request to shared ring and wait for the answer.
-+  Returns 0 for success, or an errno for error.
++  Send and receive the request to and from the ring.
 +
-+  @param IN BitNum   The number of bit to operate.
-+  @param IN Addr     The address to operate.
++  @param IN  Type            The operation type of Xenstore.
++  @param IN  Request         The requests need to send through shared ring.
++  @param IN  ReqNum          The number of the requests.
++  @param OUT ReplyLength     The length of reply data.
++  @param OUT ReplyData       The reply data.
 +
-+  @return  The old value of the bit.
++  @return EFI_SUCCESS        Successly.
++  @return Other              Error.
 +
 +**/
 +EFI_STATUS
 +EFIAPI
-+XenbusSend (
++XenbusMsgReply (
 +  IN     EFI_XENSTORE_MSG_TYPE    Type,
-+  IN     UINTN                    Length,
-+  IN     CHAR8                    *Data,
++  IN     EFI_XENSTORE_REQUEST     *Request,
++  IN     UINTN                    ReqNum,
 +  OUT    UINTN                    *ReplyLength,
 +  OUT    CHAR8                    **ReplyData
 +  )
 +{
 +  EFI_XENSTORE_MSG              XenstoreMsg;
 +  EVENT_CHANNEL_SEND            Send;
++  UINTN                         Index;
++  UINTN                         Length;
 +
 +  //
 +  // Check the shared ring.
 +  //
 +  ASSERT(Rings);
++
++  Length = 0;
++  for (Index = 0; Index < ReqNum; Index++) {
++    Length += Request[Index].Length;
++  }
 +
 +  //
 +  // Put the request on the shared ring.
@@ -1537,10 +1802,12 @@ Index: OvmfPkg/Library/XenLib/XenBus.c
 +  XenstoreMsg.Length            = Length;
 +
 +  RingWrite ((CHAR8 *) &XenstoreMsg, sizeof (EFI_XENSTORE_MSG));
-+  RingWrite (Data, Length);
++  for (Index = 0; Index < ReqNum; Index++) {
++    RingWrite (Request[Index].Data, Request[Index].Length);
++  }
 +
 +  //
-+  // Tell Dom0 about the request.
++  // Tell Xen (Dom0) about the request.
 +  //
 +  Send.Port = Event;
 +  HypervisorEventChannelOp(EVTCHNOP_SEND, &Send);
@@ -1553,7 +1820,14 @@ Index: OvmfPkg/Library/XenLib/XenBus.c
 +  Payload[XenstoreMsg.Length] = '\0';
 +
 +  if (XenstoreMsg.Type == XSError) {
-+    *ReplyLength = 0;
++    //
++    // If error, there is a Xen error message in Payload.
++    //
++    DEBUG ((EFI_D_ERROR, "Error from Xen shared ring. Error Message: "));
++    PrintStr(Payload, XenstoreMsg.Length);
++
++    *ReplyData    = NULL;
++    *ReplyLength  = 0;
 +    return EFI_ABORTED;
 +  }
 +
@@ -1564,159 +1838,180 @@ Index: OvmfPkg/Library/XenLib/XenBus.c
 +}
 +
 +/**
-+  This method is a updated version of XenbusSend().
-+  It can be used for XSWrite and XSRead.
-+
-+  @param IN BitNum   The number of bit to operate.
-+  @param IN Addr     The address to operate.
-+
-+  @return  The old value of the bit.
-+
-+**/
-+EFI_STATUS
-+EFIAPI
-+XenbusWriteSend (
-+  IN     EFI_XENSTORE_MSG_TYPE    Type,
-+  IN     CHAR8                    *Path,
-+  IN     CHAR8                    *Data,
-+  OUT    UINTN                    *ReplyLength,
-+  OUT    CHAR8                    **ReplyData
-+  )
-+{
-+  EFI_XENSTORE_MSG              XenstoreMsg;
-+  EVENT_CHANNEL_SEND            Send;
-+  EFI_XENSTORE_REQUEST          Request[2];
-+  UINTN                         RequestNum;
-+  UINTN                         Length;
-+  UINTN                         Index;
-+  
-+  //
-+  // Check the shared ring.
-+  //
-+  ASSERT(Rings);
-+
-+  //
-+  // Initialize the request
-+  //
-+  if (Type == XSWrite) {
-+    Request[0].Data    = Path;
-+    Request[0].Length  = AsciiStrLen (Path) + 1;
-+    Request[1].Data    = Data;
-+    Request[1].Length  = AsciiStrLen (Data);
-+    RequestNum         = 2; 
-+    Length             = Request[0].Length + Request[1].Length;
-+  }
-+  else {
-+    Request[0].Data    = Path;
-+    Request[0].Length  = AsciiStrLen (Path) + 1;
-+    RequestNum         = 1; 
-+    Length             = Request[0].Length;
-+  }
-+
-+  //
-+  // Put the request on the shared ring.
-+  //
-+  XenstoreMsg.Type              = Type;
-+  XenstoreMsg.RequestId         = 0;
-+  XenstoreMsg.TransactionId     = 0;
-+  XenstoreMsg.Length            = Length;
-+
-+  RingWrite ((CHAR8 *) &XenstoreMsg, sizeof (EFI_XENSTORE_MSG));
-+  for (Index = 0; Index < RequestNum; Index++) {
-+    RingWrite (Request[Index].Data, Request[Index].Length);
-+  }
-+
-+  //
-+  // Tell Dom0 about the request.
-+  //
-+  Send.Port = Event;
-+  HypervisorEventChannelOp(EVTCHNOP_SEND, &Send);
-+
-+  //
-+  // Get the reply from the ring.
-+  //
-+  RingRead ((CHAR8 *) &XenstoreMsg, sizeof (EFI_XENSTORE_MSG));
-+  RingRead (Payload, XenstoreMsg.Length);
-+  Payload[XenstoreMsg.Length] = '\0';
-+
-+  if (XenstoreMsg.Type == XSError) {
-+    *ReplyLength = 0;
-+    return EFI_ABORTED;
-+  }
-+
-+  *ReplyData    = Payload;
-+  *ReplyLength  = XenstoreMsg.Length;
-+
-+  return EFI_SUCCESS;
-+}
-+
-+/** 
 +  Read a Xenstore key. Returns a nul-terminated string or NULL.
 +
-+  @param IN Path       The Xenstore key path.
-+  @param IN Buffer     The value to assgin to the key.
++  @param IN  Path            The Xenstore key path.
++  @param OUT Data            The value to of the key.
 +
-+  @return              EFI_STATUS.
++  @return EFI_SUCCESS        Successly.
++  @return Other              Error.
 +
 +**/
 +EFI_STATUS
 +EFIAPI
-+XenstoreRead (
++XenbusRead (
 +  IN     CHAR8                    *Path,
-+  OUT    CHAR8                    **Buffer
++  OUT    CHAR8                    **Data
 +  )
 +{
-+  UINTN        Length;
-+  CHAR8        *Value;
++  EFI_STATUS                    Status;
++  UINTN                         ReplyLength;
++  CHAR8                         *ReplyData;
++
++  EFI_XENSTORE_REQUEST Request[] = {
++    //
++    // Path info
++    //
++    {
++      Path,
++      AsciiStrLen (Path) + 1
++    }
++  };
 +
 +  //
-+  // Send request to Xen Store
++  // Send request and get the reply. 
 +  //
-+  Length = 0;
-+  Value  = NULL;
++  Status = XenbusMsgReply (XSRead, Request, ARRAY_SIZE(Request), &ReplyLength, &ReplyData);
 +
-+  if ( XenbusSend(XSRead, AsciiStrLen (Path) + 1, Path, &Length, &Value) ) {
-+  //if ( XenbusWriteSend(XSRead, Path, NULL, &Length, &Value) ) {
-+    return EFI_NOT_FOUND;
++  if (EFI_ERROR(Status)) {
++    return Status;
 +  }
 +
++  *Data = ReplyData;
++  return EFI_SUCCESS;
++}
++
++/**
++  Create or modify a Xenstore key.
++
++  @param IN  Path            The Xenstore key path.
++  @param IN  Data            The value to of the key.
++
++  @return EFI_SUCCESS        Successly.
++  @return Other              Error.
++
++**/
++EFI_STATUS
++EFIAPI
++XenbusWrite (
++  IN     CHAR8                    *Path,
++  IN     CHAR8                    *Data
++  )
++{
++  EFI_STATUS                    Status;
++  UINTN                         ReplyLength;
++  CHAR8                         *ReplyData;
++
++  EFI_XENSTORE_REQUEST Request[] = {
++    //
++    // Path info
++    //
++    {
++      Path,
++      AsciiStrLen (Path) + 1
++    },
++    //
++    // Value info
++    //
++    {
++      Data,
++      AsciiStrLen (Data) + 1
++    }
++  };
++
 +  //
-+  // Get the key value, which terminated null.
++  // Send request and get the reply. 
 +  //
-+  *Buffer = Value;
++  Status = XenbusMsgReply (XSWrite, Request, ARRAY_SIZE(Request), &ReplyLength, &ReplyData);
++
++  if (EFI_ERROR(Status)) {
++    return Status;
++  }
 +
 +  return EFI_SUCCESS;
 +}
 +
-+/** 
-+  Write a key-value pair in Xenstore.
++/**
++  List a Xenstore directory.
 +
-+  @param IN Path       The Xenstore key path.
-+  @param IN Buffer     The value to assgin to the key.
++  @param IN  Path            The Xenstore key path.
++  @param OUT DataArray       A array of pointers to the key under the directory.
 +
-+  @return              EFI_STATUS.
++  @return EFI_SUCCESS        Successly.
++  @return Other              Error.
 +
 +**/
 +EFI_STATUS
 +EFIAPI
-+XenstoreWrite (
++XenbusLs (
 +  IN     CHAR8                    *Path,
-+  IN     CHAR8                    *Buffer
++  OUT    CHAR8                    ***DataArray
 +  )
 +{
-+  UINTN        Length;
-+  CHAR8        *Value;
++  EFI_STATUS                    Status;
++  UINTN                         ReplyLength;
++  CHAR8                         *ReplyData;
++  UINTN                         Index;
++  CHAR8                         *StrStart;
++  UINTN                         KeyNum;
++
++  EFI_XENSTORE_REQUEST Request[] = {
++    //
++    // Path info
++    //
++    {
++      Path,
++      AsciiStrLen (Path) + 1
++    }
++  };
 +
 +  //
-+  // Send request to Xen Store
++  // Send request and get the reply. 
 +  //
-+  Length = 0;
-+  Value  = NULL;
-+  if ( XenbusWriteSend(XSWrite, Path, Buffer, &Length, &Value) ) {
-+    return EFI_NOT_FOUND;
++  Status = XenbusMsgReply (XSDirectory, Request, ARRAY_SIZE(Request), &ReplyLength, &ReplyData);
++
++  if (EFI_ERROR(Status)) {
++    return Status;
 +  }
 +
++  //
++  // Split out each key
++  //
++  KeyNum   = 0;
++  StrStart = ReplyData;
++  for (Index = 0; Index < ReplyLength; Index++) {
++    if (ReplyData[Index] == '\0') {
++      PayloadPtr[KeyNum++] = StrStart;
++      StrStart = (CHAR8 *) (ReplyData + Index + 1);
++    }
++  }
++
++  *DataArray = PayloadPtr;
 +  return EFI_SUCCESS;
++}
++
++/**
++  Get domain ID from xenstore.
++
++  @return  The ID of surrent Domain.
++
++**/
++DOMID
++EFIAPI
++XenbusGetDomId (
++  VOID
++  )
++{
++  EFI_STATUS                    Status;
++  CHAR8                         *Data;
++
++  Status = XenbusRead("domid", &Data);
++
++  if (EFI_ERROR(Status)) {
++    return -1;
++  }
++  
++  return (DOMID) AsciiStrDecimalToUintn(Data);
 +}
 +
 Index: OvmfPkg/Library/XenLib/XenLib.h
@@ -1967,7 +2262,7 @@ Index: OvmfPkg/Library/XenHypercallLib/Hypercall.c
 ===================================================================
 --- OvmfPkg/Library/XenHypercallLib/Hypercall.c	(revision 0)
 +++ OvmfPkg/Library/XenHypercallLib/Hypercall.c	(revision 0)
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,544 @@
 +/**@file
 +  This file holds all the needed Xen Hypercalls.
 +
@@ -2025,6 +2320,162 @@ Index: OvmfPkg/Library/XenHypercallLib/Hypercall.c
 +**/
 +
 +/**
++  Hypercall #0: HYPERVISOR_SET_TRAP_TABLE
++  TODO Untested
++**/
++EFI_STATUS
++EFIAPI
++HypervisorSetTrapTable (
++  IN OUT TRAP_INFO     *Table
++  )
++{
++  return Hypercall2Abi (HYPERVISOR_SET_TRAP_TABLE, (UINTN) Table, 0, 0, 0, 0);
++}
++
++/**
++  Hypercall #1: HYPERVISOR_MMU_UPDATE
++  TODO Untested
++**/
++EFI_STATUS
++EFIAPI
++HypervisorMmuUpdate (
++  IN  MMU_UPDATE    *Req,
++  IN  UINTN         Count,
++  OUT UINTN         *SuccessCount,
++  IN  DOMID         DomId
++  )
++{
++  return Hypercall2Abi (HYPERVISOR_MMU_UPDATE, (UINTN) Req, (UINTN) Count, (UINTN) SuccessCount, (UINTN) DomId, 0);
++}
++
++/**
++  Hypercall #2: HYPERVISOR_SET_GDT
++  TODO Untested
++**/
++EFI_STATUS
++EFIAPI
++HypervisorSetGdt (
++  IN  UINTN         *FrameList,
++  IN  UINTN         Entries
++  )
++{
++  return Hypercall2Abi (HYPERVISOR_SET_GDT, (UINTN) FrameList, (UINTN) Entries, 0, 0, 0);
++}
++
++/**
++  Hypercall #3: HYPERVISOR_STACK_SWITCH
++  TODO Untested
++**/
++EFI_STATUS
++EFIAPI
++HypervisorStackSwitch (
++  IN  UINTN         SS,
++  IN  UINTN         Esp
++  )
++{
++  return Hypercall2Abi (HYPERVISOR_STACK_SWITCH, (UINTN) SS, (UINTN) Esp, 0, 0, 0);
++}
++
++/**
++  Hypercall #4: HYPERVISOR_SET_CALLBACKS
++  TODO Untested
++**/
++#if   defined (MDE_CPU_IA32)
++EFI_STATUS
++EFIAPI
++HypervisorSetCallbacks (
++  IN  UINTN         EventSelector,
++  IN  UINTN         EventAddress,
++  IN  UINTN         FailsafeSelector,
++  IN  UINTN         FailsafeAddress
++  )
++{
++  return Hypercall2Abi (HYPERVISOR_SET_CALLBACKS, (UINTN) EventSelector, (UINTN) EventAddress, (UINTN) FailsafeSelector, (UINTN) FailsafeAddress, 0);
++}
++#endif
++
++#if defined (MDE_CPU_X64)
++EFI_STATUS
++EFIAPI
++HypervisorSetCallbacks (
++  IN  UINTN         EventAddress,
++  IN  UINTN         FailsafeAddress,
++  IN  UINTN         SyscallAddress
++  )
++{
++  return Hypercall2Abi (HYPERVISOR_SET_CALLBACKS, (UINTN) EventAddress, (UINTN) FailsafeAddress, (UINTN) SyscallAddress, 0, 0);
++}
++#endif
++
++/**
++  Hypercall #5: HYPERVISOR_FPU_TASKSWITCH
++  TODO Untested
++**/
++EFI_STATUS
++EFIAPI
++HypervisorFpuTaskswitch (
++  IN  UINTN         Set
++  )
++{
++  return Hypercall2Abi (HYPERVISOR_FPU_TASKSWITCH, (UINTN) Set, 0, 0, 0, 0);
++}
++
++/**
++  Hypercall #8: HYPERVISOR_SET_DEBUGREG
++  TODO Untested
++**/
++EFI_STATUS
++EFIAPI
++HypervisorSetDebugreg (
++  IN  UINTN         Reg,
++  IN  UINTN         Value
++  )
++{
++  return Hypercall2Abi (HYPERVISOR_SET_DEBUGREG, (UINTN) Reg, (UINTN) Value, 0, 0, 0);
++}
++
++/**
++  Hypercall #9: HYPERVISOR_GET_DEBUGREG
++  TODO Untested
++**/
++EFI_STATUS
++EFIAPI
++HypervisorGetDebugreg (
++  IN  UINTN         Reg
++  )
++{
++  return Hypercall2Abi (HYPERVISOR_GET_DEBUGREG, (UINTN) Reg, 0, 0, 0, 0);
++}
++
++/**
++  Hypercall #10: HYPERVISOR_UPDATE_DESCRIPTOR
++  TODO Untested
++**/
++#if   defined (MDE_CPU_IA32)
++EFI_STATUS
++EFIAPI
++HypervisorUpdateDescriptor (
++  IN  UINT64        Ma,
++  IN  UINT64         Desc
++  )
++{
++  return Hypercall2Abi (HYPERVISOR_UPDATE_DESCRIPTOR, (UINTN) Ma, (UINTN) (Ma >> 32), (UINTN) Desc, (UINTN) (Desc >> 32), 0);
++}
++#endif
++
++#if defined (MDE_CPU_X64)
++EFI_STATUS
++EFIAPI
++HypervisorUpdateDescriptor (
++  IN  UINTN         Ma,
++  IN  UINTN         Word
++  )
++{
++  return Hypercall2Abi (HYPERVISOR_UPDATE_DESCRIPTOR, (UINTN) Ma, (UINTN) Word, 0, 0, 0);
++}
++#endif
++
++/**
 +  Hypercall #12: HYPERVISOR_MEMORY_OP
 +**/
 +EFI_STATUS
@@ -2036,6 +2487,81 @@ Index: OvmfPkg/Library/XenHypercallLib/Hypercall.c
 +{
 +  return Hypercall2Abi (HYPERVISOR_MEMORY_OP, (UINTN) Cmd, (UINTN) Arg, 0, 0, 0);
 +}
++
++/**
++  Hypercall #13: HYPERVISOR_MULTICALL
++  TODO Untested
++**/
++EFI_STATUS
++EFIAPI
++HypervisorMulticall (
++  IN  VOID          *CallList,
++  IN  UINTN         NrCalls
++  )
++{
++  return Hypercall2Abi (HYPERVISOR_MULTICALL, (UINTN) CallList, (UINTN) NrCalls, 0, 0, 0);
++}
++
++/**
++  Hypercall #14: HYPERVISOR_UPDATE_VA_MAPPING
++  TODO Untested
++**/
++#if   defined (MDE_CPU_IA32)
++EFI_STATUS
++EFIAPI
++HypervisorUpdateVaMapping (
++  IN  UINTN         Va,
++  IN  PTE           NewVal,
++  IN  UINTN         Flags
++  )
++{
++  return Hypercall2Abi (HYPERVISOR_UPDATE_VA_MAPPING, (UINTN) Va, (UINTN) NewVal.PteLow, (UINTN) NewVal.PteHigh, (UINTN) Flags, 0);
++}
++#endif
++
++#if defined (MDE_CPU_X64)
++EFI_STATUS
++EFIAPI
++HypervisorUpdateVaMapping (
++  IN  UINTN         Va,
++  IN  PTE           NewVal,
++  IN  UINTN         Flags
++  )
++{
++  return Hypercall2Abi (HYPERVISOR_UPDATE_VA_MAPPING, (UINTN) Va, (UINTN) NewVal.Pte, (UINTN) Flags, 0, 0);
++}
++#endif
++
++/**
++  Hypercall #15: HYPERVISOR_SET_TIMER_OP
++  TODO Untested
++**/
++#if   defined (MDE_CPU_IA32)
++EFI_STATUS
++EFIAPI
++HypervisorSetTimerOp (
++  IN UINT64     Timeout
++  )
++{
++  UINTN    TimeoutHi;
++  UINTN    TimeoutLo;
++
++  TimeoutHi = (UINTN) (Timeout >> 32);
++  TimeoutLo = (UINTN) Timeout;
++  return Hypercall2Abi (HYPERVISOR_SET_TIMER_OP, (UINTN) TimeoutHi, (UINTN) TimeoutLo, 0, 0, 0);
++}
++#endif
++
++#if defined (MDE_CPU_X64)
++EFI_STATUS
++EFIAPI
++HypervisorSetTimerOp (
++  IN UINT64     Timeout
++  )
++{
++  return Hypercall2Abi (HYPERVISOR_SET_TIMER_OP, (UINTN) Timeout, 0, 0, 0, 0);
++}
++#endif
 +
 +/**
 +  Hypercall #17: HYPERVISOR_XEN_VERSION
@@ -2051,6 +2577,21 @@ Index: OvmfPkg/Library/XenHypercallLib/Hypercall.c
 +}
 +
 +/**
++  Hypercall #18: HYPERVISOR_CONSOLE_IO
++  TODO Untested
++**/
++EFI_STATUS
++EFIAPI
++HypervisorConsoleIo (
++  IN  UINTN         Cmd,
++  IN  UINTN         Count,
++  OUT CHAR8         *Str
++  )
++{
++  return Hypercall2Abi (HYPERVISOR_CONSOLE_IO, (UINTN) Cmd, (UINTN) Count, (UINTN) Str, 0, 0);
++}
++
++/**
 +  Hypercall #20: HYPERVISOR_GRANT_TABLE_OP
 +**/
 +EFI_STATUS
@@ -2061,7 +2602,114 @@ Index: OvmfPkg/Library/XenHypercallLib/Hypercall.c
 +  IN UINTN      Count
 +)
 +{
-+  return Hypercall2Abi (HYPERVISOR_GRANT_TABLE_OP, (UINTN) Cmd, (UINTN) Uop, Count, 0, 0);
++  return Hypercall2Abi (HYPERVISOR_GRANT_TABLE_OP, (UINTN) Cmd, (UINTN) Uop, (UINTN) Count, 0, 0);
++}
++
++/**
++  Hypercall #21: HYPERVISOR_VM_ASSIST
++  TODO Untested
++**/
++EFI_STATUS
++EFIAPI
++HypervisorVmAssist (
++  IN  UINTN         Cmd,
++  IN  UINTN         Type
++  )
++{
++  return Hypercall2Abi(HYPERVISOR_VM_ASSIST, (UINTN) Cmd, (UINTN) Type, 0, 0, 0);
++}
++
++/**
++  Hypercall #22: HYPERVISOR_UPDATE_VA_MAPPING_OTHERDOMAIN
++  TODO Untested
++**/
++#if   defined (MDE_CPU_IA32)
++EFI_STATUS
++EFIAPI
++HypervisorUpdateVaMappingOtherdomain (
++  IN  UINTN         Va,
++  IN  PTE           NewVal,
++  IN  UINTN         Flags,
++  IN  DOMID         DomId
++  )
++{
++  return Hypercall2Abi (HYPERVISOR_UPDATE_VA_MAPPING_OTHERDOMAIN, (UINTN) Va, (UINTN) NewVal.PteLow, (UINTN) NewVal.PteHigh, (UINTN) Flags, (UINTN) DomId);
++}
++#endif
++
++#if defined (MDE_CPU_X64)
++EFI_STATUS
++EFIAPI
++HypervisorUpdateVaMappingOtherdomain (
++  IN  UINTN         Va,
++  IN  PTE           NewVal,
++  IN  UINTN         Flags,
++  IN  DOMID         DomId
++  )
++{
++  return Hypercall2Abi (HYPERVISOR_UPDATE_VA_MAPPING_OTHERDOMAIN, (UINTN) Va, (UINTN) NewVal.Pte, (UINTN) Flags, (UINTN) DomId, 0);
++}
++#endif
++
++/**
++  Hypercall #24: HYPERVISOR_VCPU_OP
++  TODO Untested
++**/
++EFI_STATUS
++EFIAPI
++HypervisorVcpuOp (
++  IN  UINTN         Cmd,
++  IN  UINTN         VcpuId,
++  IN  VOID          *ExtraArgs
++  )
++{
++  return Hypercall2Abi(HYPERVISOR_VCPU_OP, (UINTN) Cmd, (UINTN) VcpuId, (UINTN) ExtraArgs, 0, 0);
++}
++
++/**
++  Hypercall #25: HYPERVISOR_SET_SEGMENT_BASE
++  TODO Untested
++**/
++#if defined (MDE_CPU_X64)
++EFI_STATUS
++EFIAPI
++HypervisorSetSegmentBase (
++  IN  UINTN         Reg,
++  IN  UINTN         Value
++  )
++{
++  return Hypercall2Abi(HYPERVISOR_SET_SEGMENT_BASE, (UINTN) Reg, (UINTN) Value, 0, 0, 0);
++}
++#endif
++
++/**
++  Hypercall #26: HYPERVISOR_MMUEXT_OP
++  TODO Untested
++**/
++EFI_STATUS
++EFIAPI
++HypervisorMmuextOp (
++  IN  MMUEXT_OP     *Op,
++  IN  UINTN         Count,
++  OUT UINTN         *SuccessCount,
++  IN  DOMID         DomId
++  )
++{
++  return Hypercall2Abi (HYPERVISOR_MMUEXT_OP, (UINTN) Op, (UINTN) Count, (UINTN) SuccessCount, (UINTN) DomId, 0);
++}
++
++/**
++  Hypercall #28: HYPERVISOR_NMI_OP
++  TODO Untested
++**/
++EFI_STATUS
++EFIAPI
++HypervisorNmiOp (
++  IN  UINTN         Cmd,
++  IN  UINTN         Arg
++  )
++{
++  return Hypercall2Abi(HYPERVISOR_NMI_OP, (UINTN) Cmd, (UINTN) Arg, 0, 0, 0);
 +}
 +
 +/**
@@ -2078,6 +2726,18 @@ Index: OvmfPkg/Library/XenHypercallLib/Hypercall.c
 +}
 +
 +/**
++  Hypercall #29-2: HYPERVISOR_SCHED_OP
++**/
++EFI_STATUS
++EFIAPI
++HypervisorSuspend (
++  IN UINTN      Srec
++  )
++{
++  return Hypercall2Abi(HYPERVISOR_SCHED_OP, (UINTN) SCHEDOP_SHUTDOWN, (UINTN) SHUTDOWN_SUSPEND, (UINTN) Srec, 0, 0);
++}
++
++/**
 +  Hypercall #32: HYPERVISOR_EVENT_CHANNEL_OP
 +**/
 +EFI_STATUS
@@ -2091,6 +2751,19 @@ Index: OvmfPkg/Library/XenHypercallLib/Hypercall.c
 +}
 +
 +/**
++  Hypercall #33: HYPERVISOR_PHYSDEV_OP 
++  TODO Untested
++**/
++EFI_STATUS
++EFIAPI
++HypervisorPhysdevOp (
++  IN VOID       *Arg
++  )
++{
++  return Hypercall2Abi(HYPERVISOR_PHYSDEV_OP, (UINTN) Arg, 0, 0, 0, 0);
++}
++
++/**
 +  Hypercall #34: HYPERVISOR_HVM_OP
 +**/
 +EFI_STATUS
@@ -2101,6 +2774,32 @@ Index: OvmfPkg/Library/XenHypercallLib/Hypercall.c
 +  )
 +{
 +  return Hypercall2Abi (HYPERVISOR_HVM_OP, (UINTN) Cmd, (UINTN) Arg, 0, 0, 0);
++}
++
++/**
++  Hypercall #35: HYPERVISOR_SYSCTL
++  TODO Untested
++**/
++EFI_STATUS
++EFIAPI
++HypervisorSysctl (
++  IN UINTN      Op
++  )
++{
++  return Hypercall2Abi (HYPERVISOR_SYSCTL, (UINTN) Op, 0, 0, 0, 0);
++}
++
++/**
++  Hypercall #36: HYPERVISOR_DOMCTL
++  TODO Untested
++**/
++EFI_STATUS
++EFIAPI
++HypervisorDomctl (
++  IN UINTN      Op
++  )
++{
++  return Hypercall2Abi (HYPERVISOR_DOMCTL, (UINTN) Op, 0, 0, 0, 0);
 +}
 +
 +/*
@@ -2368,7 +3067,7 @@ Index: OvmfPkg/OvmfPkgIa32.dsc
    PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
    UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
    UefiCpuPkg/CpuDxe/CpuDxe.inf
-@@ -367,6 +372,12 @@
+@@ -367,10 +372,16 @@
    IntelFrameworkModulePkg/Bus/Isa/IsaFloppyDxe/IsaFloppyDxe.inf
  
    #
@@ -2381,6 +3080,11 @@ Index: OvmfPkg/OvmfPkgIa32.dsc
    # ACPI Support
    #
    MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
+-  MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
++  OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf
+   OvmfPkg/AcpiTables/AcpiTables.inf
+ 
+   #
 Index: OvmfPkg/OvmfPkgIa32.fdf
 ===================================================================
 --- OvmfPkg/OvmfPkgIa32.fdf	(revision 12124)
@@ -2399,7 +3103,7 @@ Index: OvmfPkg/OvmfPkgIa32.fdf
  INF  PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
  INF  UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
  INF  UefiCpuPkg/CpuDxe/CpuDxe.inf
-@@ -198,6 +201,9 @@
+@@ -198,8 +201,11 @@
  INF  IntelFrameworkModulePkg/Bus/Isa/Ps2KeyboardDxe/Ps2keyboardDxe.inf
  INF  IntelFrameworkModulePkg/Bus/Isa/IsaFloppyDxe/IsaFloppyDxe.inf
  
@@ -2407,8 +3111,11 @@ Index: OvmfPkg/OvmfPkgIa32.fdf
 +INF  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
 +
  INF  MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
- INF  MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
+-INF  MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
++INF  OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf
  INF  RuleOverride=ACPITABLE OvmfPkg/AcpiTables/AcpiTables.inf
+ 
+ INF  RuleOverride = BINARY FatBinPkg/EnhancedFatDxe/Fat.inf
 Index: OvmfPkg/OvmfPkgX64.dsc
 ===================================================================
 --- OvmfPkg/OvmfPkgX64.dsc	(revision 12124)
@@ -2436,7 +3143,15 @@ Index: OvmfPkg/OvmfPkgX64.dsc
    PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
    UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
    UefiCpuPkg/CpuDxe/CpuDxe.inf
-@@ -367,6 +372,12 @@
+@@ -316,6 +321,7 @@
+   }
+ 
+   PcAtChipsetPkg/PcatRealTimeClockRuntimeDxe/PcatRealTimeClockRuntimeDxe.inf {
++
+     <LibraryClasses>
+       TimerLib|OvmfPkg/Library/AcpiTimerLib/AcpiTimerLib.inf
+   }
+@@ -367,10 +373,16 @@
    IntelFrameworkModulePkg/Bus/Isa/IsaFloppyDxe/IsaFloppyDxe.inf
  
    #
@@ -2449,6 +3164,11 @@ Index: OvmfPkg/OvmfPkgX64.dsc
    # ACPI Support
    #
    MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
+-  MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
++  OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf
+   OvmfPkg/AcpiTables/AcpiTables.inf
+ 
+   #
 Index: OvmfPkg/OvmfPkgX64.fdf
 ===================================================================
 --- OvmfPkg/OvmfPkgX64.fdf	(revision 12124)
@@ -2467,7 +3187,7 @@ Index: OvmfPkg/OvmfPkgX64.fdf
  INF  PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
  INF  UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
  INF  UefiCpuPkg/CpuDxe/CpuDxe.inf
-@@ -198,6 +201,9 @@
+@@ -198,8 +201,11 @@
  INF  IntelFrameworkModulePkg/Bus/Isa/Ps2KeyboardDxe/Ps2keyboardDxe.inf
  INF  IntelFrameworkModulePkg/Bus/Isa/IsaFloppyDxe/IsaFloppyDxe.inf
  
@@ -2475,5 +3195,8 @@ Index: OvmfPkg/OvmfPkgX64.fdf
 +INF  OvmfPkg/SmbiosPlatformDxe/SmbiosPlatformDxe.inf
 +
  INF  MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
- INF  MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
+-INF  MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
++INF  OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf
  INF  RuleOverride=ACPITABLE OvmfPkg/AcpiTables/AcpiTables.inf
+ 
+ INF  RuleOverride = BINARY FatBinPkg/EnhancedFatDxe/Fat.inf
